@@ -1,0 +1,36 @@
+# server:
+#   url: "https://circuit.bjzntd.com"
+#   ws_url: "ws://circuit.bjzntd.com/api/v1/devices/commands"
+server:
+  url: "http://localhost:8000"
+  ws_url: "ws://localhost:8000/api/v1/devices/commands"
+  
+device:
+  name: "circuit_device_01"  # 设备唯一标识符
+  type: "raspberry_pi_4b"    # 设备类型
+
+camera:
+  devices:                   # 摄像头配置列表
+    - id: 0
+      name: "Camera 1"
+  video_config:             # 默认视频配置
+    format: "mp4"
+    bitrate: 2000000        # 2Mbps
+    resolution: "1920x1080"
+    fps: 30
+
+storage:
+  max_space: 20480          # 最大存储空间(MB)
+  cleanup_threshold: 80      # 清理阈值(%)
+  video_path: "videos"      # 视频存储路径
+
+network:
+  upload_chunk_size: 5242880  # 上传分片大小(5MB)
+  retry_times: 3             # 重试次数
+  retry_interval: 5          # 重试间隔(秒)
+  heartbeat_interval: 30     # 心跳间隔(秒)
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/circuit.log"
