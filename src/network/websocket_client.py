@@ -1,8 +1,11 @@
 import asyncio
 import json
 import logging
-from websockets import connect, exceptions
+import os
+import cv2
+import datetime
 import time
+from websockets import connect, exceptions
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +27,11 @@ class WebSocketClient:
             
             # 启动心跳
             asyncio.create_task(self._heartbeat())
-            
             # 启动消息处理
             asyncio.create_task(self._handle_messages())
+            
+            # 连接建立后上报本地视频信息
+            await self.report_video_info()
             
         except exceptions.InvalidStatus as e:
             logger.error(f"WebSocket connection failed: {e}")
@@ -47,7 +52,7 @@ class WebSocketClient:
                         "device_id": self.device_manager.config["device"]["name"],
                         "device_name": self.device_manager.config["device"]["name"],
                         "device_type": self.device_manager.config["device"]["type"],
-                        "camera_ids": camera_ids,  # 发送摄像头 ID 列表
+                        "camera_ids": camera_ids,
                         "ip_address": self.device_manager._get_ip_address(),
                         "mac_address": self.device_manager._get_mac_address(),
                         "last_heartbeat": int(time.time())
@@ -87,7 +92,7 @@ class WebSocketClient:
         elif cmd == "heartbeat_ack":
             # 处理心跳包的响应
             logger.info("收到心跳包响应")
-            # 可以在此处解析服务器返回的心跳包响应信息
+            # 可在此处解析服务器返回的心跳包响应信息
 
     async def _handle_start_inspection(self, data):
         """处理开始巡检命令"""
@@ -126,4 +131,37 @@ class WebSocketClient:
                 await self.camera_manager.stop_recording(camera_id)
             
         except Exception as e:
-            logger.error(f"处理结束巡检命令失败: {e}")            
+            logger.error(f"处理结束巡检命令失败: {e}")  
+
+    async def report_video_info(self):
+        """扫描本地 videos 文件夹，并上报视频信息给服务端"""
+        video_folder = "videos"  # 本地视频目录（确保与实际路径一致）
+        videos = []
+        if os.path.exists(video_folder):
+            for file in os.listdir(video_folder):
+                if file.endswith(".mp4") or file.endswith(".avi"):
+                    file_path = os.path.join(video_folder, file)
+                    file_size = os.path.getsize(file_path)
+                    creation_time = datetime.datetime.fromtimestamp(
+                        os.path.getctime(file_path)
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                    cap = cv2.VideoCapture(file_path)
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                    duration = frame_count / fps if fps and fps != 0 else 0
+                    cap.release()
+                    videos.append({
+                        "file_name": file,
+                        "file_size": file_size,
+                        "duration": duration,
+                        "creation_time": creation_time
+                    })
+        report_message = json.dumps({
+            "cmd": "video_info_update",
+            "video_list": videos
+        })
+        try:
+            await self.ws.send(report_message)
+            logger.info(f"上报本地视频信息: {report_message}")
+        except Exception as e:
+            logger.error(f"上报视频信息失败: {e}")
