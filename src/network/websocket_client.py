@@ -5,7 +5,7 @@ import os
 import cv2
 import datetime
 import time
-import subprocess
+import asyncio.subprocess
 from websockets import connect, exceptions
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,6 @@ class WebSocketClient:
         # 可根据需要增加其他命令处理
 
     async def _handle_start_inspection(self, data):
-        """处理开始巡检命令"""
         try:
             inspection_id = data.get("inspection_id")
             video_config = self.device_manager.config["camera"]["video_config"]
@@ -105,7 +104,6 @@ class WebSocketClient:
             logger.error(f"开始巡检命令处理失败: {e}")
 
     async def _handle_stop_inspection(self, data):
-        """处理结束巡检命令"""
         try:
             inspection_id = data.get("inspection_id")
             logger.info(f"结束巡检: {inspection_id}")
@@ -130,7 +128,7 @@ class WebSocketClient:
             model_path = os.path.abspath(os.path.join("models", model_file))
             logger.info(f"收到 run_annotation 命令：video_path={video_path}, model_path={model_path}")
             
-            # 调用标注程序：切换至 yolocode 环境运行标注程序
+            # 调用标注程序：使用 asyncio.create_subprocess_exec 异步调用
             cmd = [
                 "conda", "run", "-n", "yolocode", "python",
                 "/home/coatcn/workspace/ultralytics/count3.py",
@@ -138,9 +136,20 @@ class WebSocketClient:
                 "--weights", model_path
             ]
             logger.info(f"执行命令: {' '.join(cmd)}")
-            # 阻塞调用，执行标注程序
-            subprocess.run(cmd, check=True)
-            logger.info("标注程序运行成功")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            if stdout:
+                logger.info(f"标注程序输出: {stdout.decode()}")
+            if stderr:
+                logger.error(f"标注程序错误: {stderr.decode()}")
+            if proc.returncode == 0:
+                logger.info("标注程序运行成功")
+            else:
+                logger.error(f"标注程序返回错误码: {proc.returncode}")
         except Exception as e:
             logger.error(f"运行标注程序失败: {e}")
 
@@ -205,3 +214,5 @@ class WebSocketClient:
             logger.info(f"上报模型信息: {report_message}")
         except Exception as e:
             logger.error(f"上报模型信息失败: {e}")
+
+# conda run -n yolocode python /home/coatcn/workspace/ultralytics/count3.py --source <video_path> --weights <model_path>
