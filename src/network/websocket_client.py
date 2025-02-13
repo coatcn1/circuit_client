@@ -192,4 +192,16 @@ class WebSocketClient:
                     ).strftime("%Y-%m-%d %H:%M:%S")
                     models.append({
                         "file_name": file,
-                        "file_size": file_s
+                        "file_size": file_size,
+                        "creation_time": creation_time
+                    })
+        report_message = json.dumps({
+            "cmd": "model_info_update",
+            "device_id": self.device_manager.config["device"]["name"],
+            "model_list": models
+        })
+        try:
+            await self.ws.send(report_message)
+            logger.info(f"上报模型信息: {report_message}")
+        except Exception as e:
+            logger.error(f"上报模型信息失败: {e}")
