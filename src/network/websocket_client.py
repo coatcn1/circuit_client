@@ -30,7 +30,7 @@ class WebSocketClient:
             asyncio.create_task(self._heartbeat())
             asyncio.create_task(self._handle_messages())
             
-            # 连接建立后上报本地视频和模型信息
+            # 连接建立后上报本地视频和模型信息（仅上报一次）
             await self.report_video_info()
             await self.report_model_info()
             
@@ -130,7 +130,7 @@ class WebSocketClient:
             model_path = os.path.abspath(os.path.join("models", model_file))
             logger.info(f"收到 run_annotation 命令：video_path={video_path}, model_path={model_path}")
             
-            # 调用标注程序，使用 conda 切换至 yolocode 环境运行 /home/coatcn/workspace/ultralytics/count3.py
+            # 调用标注程序：切换至 yolocode 环境运行标注程序
             cmd = [
                 "conda", "run", "-n", "yolocode", "python",
                 "/home/coatcn/workspace/ultralytics/count3.py",
@@ -138,6 +138,7 @@ class WebSocketClient:
                 "--weights", model_path
             ]
             logger.info(f"执行命令: {' '.join(cmd)}")
+            # 阻塞调用，执行标注程序
             subprocess.run(cmd, check=True)
             logger.info("标注程序运行成功")
         except Exception as e:
@@ -178,7 +179,7 @@ class WebSocketClient:
             logger.error(f"上报视频信息失败: {e}")
 
     async def report_model_info(self):
-        """扫描本地模型文件目录，并上报模型信息"""
+        """扫描本地模型文件目录，并上报模型信息（仅上报一次）"""
         model_folder = self.device_manager.config.get("model_path", "models")
         models = []
         if os.path.exists(model_folder):
@@ -191,16 +192,4 @@ class WebSocketClient:
                     ).strftime("%Y-%m-%d %H:%M:%S")
                     models.append({
                         "file_name": file,
-                        "file_size": file_size,
-                        "creation_time": creation_time
-                    })
-        report_message = json.dumps({
-            "cmd": "model_info_update",
-            "device_id": self.device_manager.config["device"]["name"],
-            "model_list": models
-        })
-        try:
-            await self.ws.send(report_message)
-            logger.info(f"上报模型信息: {report_message}")
-        except Exception as e:
-            logger.error(f"上报模型信息失败: {e}")
+                        "file_size": file_s
