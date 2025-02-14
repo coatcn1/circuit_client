@@ -292,3 +292,45 @@ class WebSocketClient:
             result["status"] = "error"
             result["error"] = str(e)
         await self.ws.send(json.dumps(result))
+
+    async def _process_message(self, data):
+        cmd = data.get("cmd")
+        if cmd == "start_inspection":
+            await self._handle_start_inspection(data)
+        elif cmd == "stop_inspection":
+            await self._handle_stop_inspection(data)
+        elif cmd == "heartbeat_ack":
+            logger.info("收到心跳包响应")
+        elif cmd == "run_annotation":
+            await self._handle_run_annotation(data)
+        elif cmd == "start_video_preview":
+            await self._handle_start_video_preview(data)
+        elif cmd == "video_download":
+            await self._handle_video_download(data)
+        elif cmd == "delete_video":
+            await self._handle_delete_video(data)
+        # 新增：处理上传视频命令
+        elif cmd == "upload_video_start":
+            await self._handle_upload_video_start(data)
+        elif cmd == "upload_video_chunk":
+            await self._handle_upload_video_chunk(data)
+        elif cmd == "upload_video_end":
+            await self._handle_upload_video_end(data)
+
+    async def _handle_upload_video_start(self, data):
+        filename = data.get("filename")
+        file_path = os.path.abspath(os.path.join("videos", filename))
+        self.upload_file = open(file_path, "wb")
+        logger.info(f"开始上传视频: {filename}")
+
+    async def _handle_upload_video_chunk(self, data):
+        import base64
+        chunk_data = base64.b64decode(data.get("data"))
+        if hasattr(self, "upload_file") and self.upload_file:
+            self.upload_file.write(chunk_data)
+
+    async def _handle_upload_video_end(self, data):
+        if hasattr(self, "upload_file") and self.upload_file:
+            self.upload_file.close()
+            logger.info(f"上传视频结束: {data.get('filename')}")
+            self.upload_file = None
