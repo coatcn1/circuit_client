@@ -37,13 +37,13 @@ class WebSocketClient:
             logger.error(f"连接时出现意外错误: {e}")
             
     async def _heartbeat(self):
-        """发送心跳包, 包含视频和模型信息"""
+        """发送心跳包, 包含视频、outputs 和模型信息"""
         while True:
             try:
                 if self.ws:
                     camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
                     
-                    # 收集视频信息
+                    # 收集 videos 文件夹视频信息
                     video_list = []
                     video_folder = "videos"
                     if os.path.exists(video_folder):
@@ -60,6 +60,29 @@ class WebSocketClient:
                                 duration = frame_count / fps if fps and fps != 0 else 0
                                 cap.release()
                                 video_list.append({
+                                    "file_name": file,
+                                    "file_size": file_size,
+                                    "duration": duration,
+                                    "creation_time": creation_time
+                                })
+                    
+                    # 收集 outputs 文件夹视频信息
+                    outputs_list = []
+                    outputs_folder = "outputs"
+                    if os.path.exists(outputs_folder):
+                        for file in os.listdir(outputs_folder):
+                            if file.endswith(".mp4") or file.endswith(".avi"):
+                                file_path = os.path.join(outputs_folder, file)
+                                file_size = os.path.getsize(file_path)
+                                creation_time = datetime.datetime.fromtimestamp(
+                                    os.path.getctime(file_path)
+                                ).strftime("%Y-%m-%d %H:%M:%S")
+                                cap = cv2.VideoCapture(file_path)
+                                fps = cap.get(cv2.CAP_PROP_FPS)
+                                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                                duration = frame_count / fps if fps and fps != 0 else 0
+                                cap.release()
+                                outputs_list.append({
                                     "file_name": file,
                                     "file_size": file_size,
                                     "duration": duration,
@@ -93,6 +116,7 @@ class WebSocketClient:
                         "mac_address": self.device_manager._get_mac_address(),
                         "last_heartbeat": int(time.time()),
                         "video_list": video_list,
+                        "outputs_list": outputs_list,
                         "model_list": model_list
                     })
                     await self.ws.send(heartbeat_message)
@@ -129,7 +153,6 @@ class WebSocketClient:
             logger.info("收到心跳包响应")
         elif cmd == "run_annotation":
             await self._handle_run_annotation(data)
-        # 新增：处理视频预览、下载和删除命令
         elif cmd == "start_video_preview":
             await self._handle_start_video_preview(data)
         elif cmd == "video_download":
@@ -200,10 +223,11 @@ class WebSocketClient:
     async def _handle_start_video_preview(self, data):
         """处理服务端下发的视频预览请求：读取本地视频，连续发送 JPEG 帧"""
         filename = data.get("filename")
+        folder = data.get("folder", "videos")
         if not filename:
             logger.error("start_video_preview 缺少 filename")
             return
-        video_path = os.path.abspath(os.path.join("videos", filename))
+        video_path = os.path.abspath(os.path.join(folder, filename))
         if not os.path.exists(video_path):
             logger.error(f"视频文件不存在: {video_path}")
             return
@@ -222,23 +246,23 @@ class WebSocketClient:
                 await asyncio.sleep(0.033)  # 大约30帧每秒
         finally:
             cap.release()
-            # 可选：发送结束标记（服务器端可据此停止等待）
             await self.ws.send(json.dumps({"cmd": "video_preview_end"}))
 
     async def _handle_video_download(self, data):
         """处理服务端下发的视频下载请求：读取本地视频文件并分块发送"""
         filename = data.get("filename")
+        folder = data.get("folder", "videos")
         if not filename:
             logger.error("video_download 缺少 filename")
             return
-        video_path = os.path.abspath(os.path.join("videos", filename))
+        video_path = os.path.abspath(os.path.join(folder, filename))
         if not os.path.exists(video_path):
             logger.error(f"视频文件不存在: {video_path}")
             return
         try:
             with open(video_path, "rb") as f:
                 while True:
-                    chunk = f.read(1024*64)  # 每块64KB
+                    chunk = f.read(1024*64)
                     if not chunk:
                         break
                     b64 = base64.b64encode(chunk).decode('utf-8')
@@ -252,10 +276,11 @@ class WebSocketClient:
     async def _handle_delete_video(self, data):
         """处理服务端下发的删除视频请求：删除本地视频文件并返回结果"""
         filename = data.get("filename")
+        folder = data.get("folder", "videos")
         if not filename:
             logger.error("delete_video 缺少 filename")
             return
-        video_path = os.path.abspath(os.path.join("videos", filename))
+        video_path = os.path.abspath(os.path.join(folder, filename))
         result = {"cmd": "delete_video_ack", "filename": filename}
         try:
             if os.path.exists(video_path):
