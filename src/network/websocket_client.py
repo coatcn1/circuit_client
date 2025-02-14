@@ -30,9 +30,9 @@ class WebSocketClient:
             asyncio.create_task(self._heartbeat())
             asyncio.create_task(self._handle_messages())
             
-            # 连接建立后上报本地视频和模型信息（仅上报一次）
-            await self.report_video_info()
-            await self.report_model_info()
+            # 连接建立后（无需单独上报视频与模型信息，现包含在心跳包中）
+            # await self.report_video_info()
+            # await self.report_model_info()
             
         except exceptions.InvalidStatus as e:
             logger.error(f"WebSocket 连接失败: {e}")
@@ -40,11 +40,52 @@ class WebSocketClient:
             logger.error(f"连接时出现意外错误: {e}")
             
     async def _heartbeat(self):
-        """发送心跳包"""
+        """发送心跳包, 包含视频和模型信息"""
         while True:
             try:
                 if self.ws:
                     camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
+                    
+                    # 收集视频信息
+                    video_list = []
+                    video_folder = "videos"
+                    if os.path.exists(video_folder):
+                        for file in os.listdir(video_folder):
+                            if file.endswith(".mp4") or file.endswith(".avi"):
+                                file_path = os.path.join(video_folder, file)
+                                file_size = os.path.getsize(file_path)
+                                creation_time = datetime.datetime.fromtimestamp(
+                                    os.path.getctime(file_path)
+                                ).strftime("%Y-%m-%d %H:%M:%S")
+                                cap = cv2.VideoCapture(file_path)
+                                fps = cap.get(cv2.CAP_PROP_FPS)
+                                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                                duration = frame_count / fps if fps and fps != 0 else 0
+                                cap.release()
+                                video_list.append({
+                                    "file_name": file,
+                                    "file_size": file_size,
+                                    "duration": duration,
+                                    "creation_time": creation_time
+                                })
+                    
+                    # 收集模型信息
+                    model_list = []
+                    model_folder = self.device_manager.config.get("model_path", "models")
+                    if os.path.exists(model_folder):
+                        for file in os.listdir(model_folder):
+                            if file.endswith(".pt"):
+                                file_path = os.path.join(model_folder, file)
+                                file_size = os.path.getsize(file_path)
+                                creation_time = datetime.datetime.fromtimestamp(
+                                    os.path.getctime(file_path)
+                                ).strftime("%Y-%m-%d %H:%M:%S")
+                                model_list.append({
+                                    "file_name": file,
+                                    "file_size": file_size,
+                                    "creation_time": creation_time
+                                })
+                    
                     heartbeat_message = json.dumps({
                         "cmd": "heartbeat",
                         "device_id": self.device_manager.config["device"]["name"],
@@ -53,7 +94,9 @@ class WebSocketClient:
                         "camera_ids": camera_ids,
                         "ip_address": self.device_manager._get_ip_address(),
                         "mac_address": self.device_manager._get_mac_address(),
-                        "last_heartbeat": int(time.time())
+                        "last_heartbeat": int(time.time()),
+                        "video_list": video_list,
+                        "model_list": model_list
                     })
                     await self.ws.send(heartbeat_message)
                     logger.info(f"发送心跳包: {heartbeat_message}")
@@ -152,67 +195,3 @@ class WebSocketClient:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
         except Exception as e:
             logger.error(f"运行标注程序失败: {e}")
-
-    async def report_video_info(self):
-        """扫描本地 videos 文件夹，并上报视频信息"""
-        video_folder = "videos"
-        videos = []
-        if os.path.exists(video_folder):
-            for file in os.listdir(video_folder):
-                if file.endswith(".mp4") or file.endswith(".avi"):
-                    file_path = os.path.join(video_folder, file)
-                    file_size = os.path.getsize(file_path)
-                    creation_time = datetime.datetime.fromtimestamp(
-                        os.path.getctime(file_path)
-                    ).strftime("%Y-%m-%d %H:%M:%S")
-                    cap = cv2.VideoCapture(file_path)
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                    duration = frame_count / fps if fps and fps != 0 else 0
-                    cap.release()
-                    videos.append({
-                        "file_name": file,
-                        "file_size": file_size,
-                        "duration": duration,
-                        "creation_time": creation_time
-                    })
-        report_message = json.dumps({
-            "cmd": "video_info_update",
-            "device_id": self.device_manager.config["device"]["name"],
-            "video_list": videos
-        })
-        try:
-            await self.ws.send(report_message)
-            logger.info(f"上报视频信息: {report_message}")
-        except Exception as e:
-            logger.error(f"上报视频信息失败: {e}")
-
-    async def report_model_info(self):
-        """扫描本地模型文件目录，并上报模型信息（仅上报一次）"""
-        model_folder = self.device_manager.config.get("model_path", "models")
-        models = []
-        if os.path.exists(model_folder):
-            for file in os.listdir(model_folder):
-                if file.endswith(".pt"):
-                    file_path = os.path.join(model_folder, file)
-                    file_size = os.path.getsize(file_path)
-                    creation_time = datetime.datetime.fromtimestamp(
-                        os.path.getctime(file_path)
-                    ).strftime("%Y-%m-%d %H:%M:%S")
-                    models.append({
-                        "file_name": file,
-                        "file_size": file_size,
-                        "creation_time": creation_time
-                    })
-        report_message = json.dumps({
-            "cmd": "model_info_update",
-            "device_id": self.device_manager.config["device"]["name"],
-            "model_list": models
-        })
-        try:
-            await self.ws.send(report_message)
-            logger.info(f"上报模型信息: {report_message}")
-        except Exception as e:
-            logger.error(f"上报模型信息失败: {e}")
-
-# conda run -n yolocode python /home/coatcn/workspace/ultralytics/count3.py --source <video_path> --weights <model_path>
