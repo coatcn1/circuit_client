@@ -6,6 +6,7 @@ import cv2
 import datetime
 import time
 import asyncio.subprocess
+import base64
 from websockets import connect, exceptions
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,6 @@ class WebSocketClient:
             # 启动心跳和消息处理任务
             asyncio.create_task(self._heartbeat())
             asyncio.create_task(self._handle_messages())
-            
-            # 连接建立后（无需单独上报视频与模型信息，现包含在心跳包中）
-            # await self.report_video_info()
-            # await self.report_model_info()
             
         except exceptions.InvalidStatus as e:
             logger.error(f"WebSocket 连接失败: {e}")
@@ -132,8 +129,14 @@ class WebSocketClient:
             logger.info("收到心跳包响应")
         elif cmd == "run_annotation":
             await self._handle_run_annotation(data)
-        # 可根据需要增加其他命令处理
-
+        # 新增：处理视频预览、下载和删除命令
+        elif cmd == "start_video_preview":
+            await self._handle_start_video_preview(data)
+        elif cmd == "video_download":
+            await self._handle_video_download(data)
+        elif cmd == "delete_video":
+            await self._handle_delete_video(data)
+    
     async def _handle_start_inspection(self, data):
         try:
             inspection_id = data.get("inspection_id")
@@ -166,12 +169,10 @@ class WebSocketClient:
             if not video_file or not model_file:
                 logger.error("run_annotation 缺少视频或模型参数")
                 return
-            # 构建完整路径，假设视频在本地 videos 目录，模型在 models 目录
             video_path = os.path.abspath(os.path.join("videos", video_file))
             model_path = os.path.abspath(os.path.join("models", model_file))
             logger.info(f"收到 run_annotation 命令：video_path={video_path}, model_path={model_path}")
             
-            # 调用标注程序：使用 asyncio.create_subprocess_exec 异步调用
             cmd = [
                 "conda", "run", "-n", "yolocode", "python",
                 "/home/coatcn/workspace/ultralytics/count3.py",
@@ -195,3 +196,74 @@ class WebSocketClient:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
         except Exception as e:
             logger.error(f"运行标注程序失败: {e}")
+
+    async def _handle_start_video_preview(self, data):
+        """处理服务端下发的视频预览请求：读取本地视频，连续发送 JPEG 帧"""
+        filename = data.get("filename")
+        if not filename:
+            logger.error("start_video_preview 缺少 filename")
+            return
+        video_path = os.path.abspath(os.path.join("videos", filename))
+        if not os.path.exists(video_path):
+            logger.error(f"视频文件不存在: {video_path}")
+            return
+        cap = cv2.VideoCapture(video_path)
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                ret, jpeg = cv2.imencode('.jpg', frame)
+                if not ret:
+                    continue
+                b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+                message = json.dumps({"cmd": "video_frame", "data": b64})
+                await self.ws.send(message)
+                await asyncio.sleep(0.033)  # 大约30帧每秒
+        finally:
+            cap.release()
+            # 可选：发送结束标记（服务器端可据此停止等待）
+            await self.ws.send(json.dumps({"cmd": "video_preview_end"}))
+
+    async def _handle_video_download(self, data):
+        """处理服务端下发的视频下载请求：读取本地视频文件并分块发送"""
+        filename = data.get("filename")
+        if not filename:
+            logger.error("video_download 缺少 filename")
+            return
+        video_path = os.path.abspath(os.path.join("videos", filename))
+        if not os.path.exists(video_path):
+            logger.error(f"视频文件不存在: {video_path}")
+            return
+        try:
+            with open(video_path, "rb") as f:
+                while True:
+                    chunk = f.read(1024*64)  # 每块64KB
+                    if not chunk:
+                        break
+                    b64 = base64.b64encode(chunk).decode('utf-8')
+                    message = json.dumps({"cmd": "video_download_chunk", "data": b64})
+                    await self.ws.send(message)
+                    await asyncio.sleep(0.01)
+            await self.ws.send(json.dumps({"cmd": "video_download_end"}))
+        except Exception as e:
+            logger.error(f"视频下载失败: {e}")
+
+    async def _handle_delete_video(self, data):
+        """处理服务端下发的删除视频请求：删除本地视频文件并返回结果"""
+        filename = data.get("filename")
+        if not filename:
+            logger.error("delete_video 缺少 filename")
+            return
+        video_path = os.path.abspath(os.path.join("videos", filename))
+        result = {"cmd": "delete_video_ack", "filename": filename}
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                result["status"] = "success"
+            else:
+                result["status"] = "file not found"
+        except Exception as e:
+            result["status"] = "error"
+            result["error"] = str(e)
+        await self.ws.send(json.dumps(result))
