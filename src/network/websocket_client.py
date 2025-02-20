@@ -30,100 +30,127 @@ class WebSocketClient:
             # 启动心跳和消息处理任务
             asyncio.create_task(self._heartbeat())
             asyncio.create_task(self._handle_messages())
+            # 新增：监控客户端文件变化，发生修改时立即发送心跳包
+            asyncio.create_task(self.watch_file_changes())
             
         except exceptions.InvalidStatus as e:
             logger.error(f"WebSocket 连接失败: {e}")
         except Exception as e:
             logger.error(f"连接时出现意外错误: {e}")
             
+    async def send_heartbeat_message(self):
+        """构建并发送心跳包"""
+        try:
+            if self.ws:
+                camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
+                
+                # 收集 videos 文件夹视频信息
+                video_list = []
+                video_folder = "videos"
+                if os.path.exists(video_folder):
+                    for file in os.listdir(video_folder):
+                        if file.endswith(".mp4") or file.endswith(".avi"):
+                            file_path = os.path.join(video_folder, file)
+                            file_size = os.path.getsize(file_path)
+                            creation_time = datetime.datetime.fromtimestamp(
+                                os.path.getctime(file_path)
+                            ).strftime("%Y-%m-%d %H:%M:%S")
+                            cap = cv2.VideoCapture(file_path)
+                            fps = cap.get(cv2.CAP_PROP_FPS)
+                            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                            duration = frame_count / fps if fps and fps != 0 else 0
+                            cap.release()
+                            video_list.append({
+                                "file_name": file,
+                                "file_size": file_size,
+                                "duration": duration,
+                                "creation_time": creation_time
+                            })
+                    
+                # 收集 outputs 文件夹视频信息
+                outputs_list = []
+                outputs_folder = "outputs"
+                if os.path.exists(outputs_folder):
+                    for file in os.listdir(outputs_folder):
+                        if file.endswith(".mp4") or file.endswith(".avi"):
+                            file_path = os.path.join(outputs_folder, file)
+                            file_size = os.path.getsize(file_path)
+                            creation_time = datetime.datetime.fromtimestamp(
+                                os.path.getctime(file_path)
+                            ).strftime("%Y-%m-%d %H:%M:%S")
+                            cap = cv2.VideoCapture(file_path)
+                            fps = cap.get(cv2.CAP_PROP_FPS)
+                            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                            duration = frame_count / fps if fps and fps != 0 else 0
+                            cap.release()
+                            outputs_list.append({
+                                "file_name": file,
+                                "file_size": file_size,
+                                "duration": duration,
+                                "creation_time": creation_time
+                            })
+                    
+                # 收集模型信息
+                model_list = []
+                model_folder = self.device_manager.config.get("model_path", "models")
+                if os.path.exists(model_folder):
+                    for file in os.listdir(model_folder):
+                        if file.endswith(".pt"):
+                            file_path = os.path.join(model_folder, file)
+                            file_size = os.path.getsize(file_path)
+                            creation_time = datetime.datetime.fromtimestamp(
+                                os.path.getctime(file_path)
+                            ).strftime("%Y-%m-%d %H:%M:%S")
+                            model_list.append({
+                                "file_name": file,
+                                "file_size": file_size,
+                                "creation_time": creation_time
+                            })
+                    
+                heartbeat_message = json.dumps({
+                    "cmd": "heartbeat",
+                    "device_id": self.device_manager.config["device"]["name"],
+                    "device_name": self.device_manager.config["device"]["name"],
+                    "device_type": self.device_manager.config["device"]["type"],
+                    "camera_ids": camera_ids,
+                    "ip_address": self.device_manager._get_ip_address(),
+                    "mac_address": self.device_manager._get_mac_address(),
+                    "last_heartbeat": int(time.time()),
+                    "video_list": video_list,
+                    "outputs_list": outputs_list,
+                    "model_list": model_list
+                })
+                await self.ws.send(heartbeat_message)
+                logger.info(f"发送心跳包: {heartbeat_message}")
+        except Exception as e:
+            logger.error(f"心跳发送失败: {e}")
+                
     async def _heartbeat(self):
-        """发送心跳包, 包含视频、outputs 和模型信息"""
+        """定时发送心跳包"""
         while True:
             try:
-                if self.ws:
-                    camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
-                    
-                    # 收集 videos 文件夹视频信息
-                    video_list = []
-                    video_folder = "videos"
-                    if os.path.exists(video_folder):
-                        for file in os.listdir(video_folder):
-                            if file.endswith(".mp4") or file.endswith(".avi"):
-                                file_path = os.path.join(video_folder, file)
-                                file_size = os.path.getsize(file_path)
-                                creation_time = datetime.datetime.fromtimestamp(
-                                    os.path.getctime(file_path)
-                                ).strftime("%Y-%m-%d %H:%M:%S")
-                                cap = cv2.VideoCapture(file_path)
-                                fps = cap.get(cv2.CAP_PROP_FPS)
-                                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                                duration = frame_count / fps if fps and fps != 0 else 0
-                                cap.release()
-                                video_list.append({
-                                    "file_name": file,
-                                    "file_size": file_size,
-                                    "duration": duration,
-                                    "creation_time": creation_time
-                                })
-                    
-                    # 收集 outputs 文件夹视频信息
-                    outputs_list = []
-                    outputs_folder = "outputs"
-                    if os.path.exists(outputs_folder):
-                        for file in os.listdir(outputs_folder):
-                            if file.endswith(".mp4") or file.endswith(".avi"):
-                                file_path = os.path.join(outputs_folder, file)
-                                file_size = os.path.getsize(file_path)
-                                creation_time = datetime.datetime.fromtimestamp(
-                                    os.path.getctime(file_path)
-                                ).strftime("%Y-%m-%d %H:%M:%S")
-                                cap = cv2.VideoCapture(file_path)
-                                fps = cap.get(cv2.CAP_PROP_FPS)
-                                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-                                duration = frame_count / fps if fps and fps != 0 else 0
-                                cap.release()
-                                outputs_list.append({
-                                    "file_name": file,
-                                    "file_size": file_size,
-                                    "duration": duration,
-                                    "creation_time": creation_time
-                                })
-                    
-                    # 收集模型信息
-                    model_list = []
-                    model_folder = self.device_manager.config.get("model_path", "models")
-                    if os.path.exists(model_folder):
-                        for file in os.listdir(model_folder):
-                            if file.endswith(".pt"):
-                                file_path = os.path.join(model_folder, file)
-                                file_size = os.path.getsize(file_path)
-                                creation_time = datetime.datetime.fromtimestamp(
-                                    os.path.getctime(file_path)
-                                ).strftime("%Y-%m-%d %H:%M:%S")
-                                model_list.append({
-                                    "file_name": file,
-                                    "file_size": file_size,
-                                    "creation_time": creation_time
-                                })
-                    
-                    heartbeat_message = json.dumps({
-                        "cmd": "heartbeat",
-                        "device_id": self.device_manager.config["device"]["name"],
-                        "device_name": self.device_manager.config["device"]["name"],
-                        "device_type": self.device_manager.config["device"]["type"],
-                        "camera_ids": camera_ids,
-                        "ip_address": self.device_manager._get_ip_address(),
-                        "mac_address": self.device_manager._get_mac_address(),
-                        "last_heartbeat": int(time.time()),
-                        "video_list": video_list,
-                        "outputs_list": outputs_list,
-                        "model_list": model_list
-                    })
-                    await self.ws.send(heartbeat_message)
-                    logger.info(f"发送心跳包: {heartbeat_message}")
-                await asyncio.sleep(30)
+                await self.send_heartbeat_message()
             except Exception as e:
                 logger.error(f"心跳发送失败: {e}")
+            await asyncio.sleep(30)
+            
+    async def watch_file_changes(self):
+        """监控客户端文件变化，发生修改时立即发送心跳包"""
+        try:
+            last_mtime = os.path.getmtime(__file__)
+        except Exception as e:
+            logger.error(f"无法获取文件修改时间: {e}")
+            return
+        while True:
+            await asyncio.sleep(1)
+            try:
+                current_mtime = os.path.getmtime(__file__)
+                if current_mtime != last_mtime:
+                    last_mtime = current_mtime
+                    logger.info("检测到客户端文件修改，立即发送心跳包")
+                    await self.send_heartbeat_message()
+            except Exception as e:
+                logger.error(f"文件监控出错: {e}")
                 
     async def _handle_messages(self):
         """处理服务器消息"""
@@ -159,6 +186,13 @@ class WebSocketClient:
             await self._handle_video_download(data)
         elif cmd == "delete_video":
             await self._handle_delete_video(data)
+        # 新增：处理上传视频命令
+        elif cmd == "upload_video_start":
+            await self._handle_upload_video_start(data)
+        elif cmd == "upload_video_chunk":
+            await self._handle_upload_video_chunk(data)
+        elif cmd == "upload_video_end":
+            await self._handle_upload_video_end(data)
     
     async def _handle_start_inspection(self, data):
         try:
@@ -292,30 +326,6 @@ class WebSocketClient:
             result["status"] = "error"
             result["error"] = str(e)
         await self.ws.send(json.dumps(result))
-
-    async def _process_message(self, data):
-        cmd = data.get("cmd")
-        if cmd == "start_inspection":
-            await self._handle_start_inspection(data)
-        elif cmd == "stop_inspection":
-            await self._handle_stop_inspection(data)
-        elif cmd == "heartbeat_ack":
-            logger.info("收到心跳包响应")
-        elif cmd == "run_annotation":
-            await self._handle_run_annotation(data)
-        elif cmd == "start_video_preview":
-            await self._handle_start_video_preview(data)
-        elif cmd == "video_download":
-            await self._handle_video_download(data)
-        elif cmd == "delete_video":
-            await self._handle_delete_video(data)
-        # 新增：处理上传视频命令
-        elif cmd == "upload_video_start":
-            await self._handle_upload_video_start(data)
-        elif cmd == "upload_video_chunk":
-            await self._handle_upload_video_chunk(data)
-        elif cmd == "upload_video_end":
-            await self._handle_upload_video_end(data)
 
     async def _handle_upload_video_start(self, data):
         filename = data.get("filename")
