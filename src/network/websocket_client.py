@@ -16,34 +16,36 @@ class WebSocketClient:
         self.device_manager = device_manager
         self.camera_manager = camera_manager
         self.ws = None
-        
+        # 用于保存当前正在进行的视频预览任务
+        self.current_preview_task = None
+
     async def connect(self):
         """建立 WebSocket 连接"""
         config = self.device_manager.config
         ws_url = config['server']['ws_url']
-        
+
         try:
             logger.info(f"正在连接 WebSocket：{ws_url}")
             self.ws = await connect(ws_url)
             logger.info("WebSocket 连接成功")
-            
+
             # 启动心跳和消息处理任务
             asyncio.create_task(self._heartbeat())
             asyncio.create_task(self._handle_messages())
-            # 新增：监控客户端文件变化，发生修改时立即发送心跳包
+            # 启动文件变化监控任务：监控 videos、outputs 和模型目录
             asyncio.create_task(self.watch_file_changes())
-            
+
         except exceptions.InvalidStatus as e:
             logger.error(f"WebSocket 连接失败: {e}")
         except Exception as e:
             logger.error(f"连接时出现意外错误: {e}")
-            
+
     async def send_heartbeat_message(self):
         """构建并发送心跳包"""
         try:
             if self.ws:
                 camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
-                
+
                 # 收集 videos 文件夹视频信息
                 video_list = []
                 video_folder = "videos"
@@ -66,7 +68,7 @@ class WebSocketClient:
                                 "duration": duration,
                                 "creation_time": creation_time
                             })
-                    
+
                 # 收集 outputs 文件夹视频信息
                 outputs_list = []
                 outputs_folder = "outputs"
@@ -89,7 +91,7 @@ class WebSocketClient:
                                 "duration": duration,
                                 "creation_time": creation_time
                             })
-                    
+
                 # 收集模型信息
                 model_list = []
                 model_folder = self.device_manager.config.get("model_path", "models")
@@ -106,7 +108,7 @@ class WebSocketClient:
                                 "file_size": file_size,
                                 "creation_time": creation_time
                             })
-                    
+
                 heartbeat_message = json.dumps({
                     "cmd": "heartbeat",
                     "device_id": self.device_manager.config["device"]["name"],
@@ -124,7 +126,7 @@ class WebSocketClient:
                 logger.info(f"发送心跳包: {heartbeat_message}")
         except Exception as e:
             logger.error(f"心跳发送失败: {e}")
-                
+
     async def _heartbeat(self):
         """定时发送心跳包"""
         while True:
@@ -133,25 +135,39 @@ class WebSocketClient:
             except Exception as e:
                 logger.error(f"心跳发送失败: {e}")
             await asyncio.sleep(30)
-            
+
     async def watch_file_changes(self):
-        """监控客户端文件变化，发生修改时立即发送心跳包"""
-        try:
-            last_mtime = os.path.getmtime(__file__)
-        except Exception as e:
-            logger.error(f"无法获取文件修改时间: {e}")
-            return
+        """
+        监控指定目录中的文件变化（增删改）
+        目录包括：videos、outputs 以及模型目录
+        一旦检测到变化，立即发送一次心跳包
+        """
+        directories = ["videos", "outputs", self.device_manager.config.get("model_path", "models")]
+        previous_snapshot = {}
+        for d in directories:
+            if os.path.exists(d):
+                for file in os.listdir(d):
+                    full_path = os.path.join(d, file)
+                    try:
+                        previous_snapshot[full_path] = os.path.getmtime(full_path)
+                    except Exception:
+                        pass
         while True:
             await asyncio.sleep(1)
-            try:
-                current_mtime = os.path.getmtime(__file__)
-                if current_mtime != last_mtime:
-                    last_mtime = current_mtime
-                    logger.info("检测到客户端文件修改，立即发送心跳包")
-                    await self.send_heartbeat_message()
-            except Exception as e:
-                logger.error(f"文件监控出错: {e}")
-                
+            current_snapshot = {}
+            for d in directories:
+                if os.path.exists(d):
+                    for file in os.listdir(d):
+                        full_path = os.path.join(d, file)
+                        try:
+                            current_snapshot[full_path] = os.path.getmtime(full_path)
+                        except Exception:
+                            pass
+            if current_snapshot != previous_snapshot:
+                logger.info("检测到文件变化，立即发送心跳包")
+                previous_snapshot = current_snapshot
+                await self.send_heartbeat_message()
+
     async def _handle_messages(self):
         """处理服务器消息"""
         while True:
@@ -169,7 +185,7 @@ class WebSocketClient:
                         logger.error(f"JSON解码失败: {e} - 原始消息: {message}")
             except Exception as e:
                 logger.error(f"消息处理失败: {e}")
-                
+
     async def _process_message(self, data):
         cmd = data.get("cmd")
         if cmd == "start_inspection":
@@ -193,7 +209,7 @@ class WebSocketClient:
             await self._handle_upload_video_chunk(data)
         elif cmd == "upload_video_end":
             await self._handle_upload_video_end(data)
-    
+
     async def _handle_start_inspection(self, data):
         try:
             inspection_id = data.get("inspection_id")
@@ -229,7 +245,7 @@ class WebSocketClient:
             video_path = os.path.abspath(os.path.join("videos", video_file))
             model_path = os.path.abspath(os.path.join("models", model_file))
             logger.info(f"收到 run_annotation 命令：video_path={video_path}, model_path={model_path}")
-            
+
             cmd = [
                 "conda", "run", "-n", "yolocode", "python",
                 "/home/coatcn/workspace/ultralytics/count3.py",
@@ -255,12 +271,25 @@ class WebSocketClient:
             logger.error(f"运行标注程序失败: {e}")
 
     async def _handle_start_video_preview(self, data):
-        """处理服务端下发的视频预览请求：读取本地视频，连续发送 JPEG 帧"""
+        """处理服务端下发的视频预览请求：如果已有预览任务则提前取消，启动新的视频预览任务"""
         filename = data.get("filename")
         folder = data.get("folder", "videos")
         if not filename:
             logger.error("start_video_preview 缺少 filename")
             return
+        # 如果已有正在进行的视频预览任务，则取消它
+        if self.current_preview_task is not None and not self.current_preview_task.done():
+            logger.info("取消当前正在进行的视频预览任务")
+            self.current_preview_task.cancel()
+            try:
+                await self.current_preview_task
+            except asyncio.CancelledError:
+                logger.info("当前视频预览任务已取消")
+        # 启动新的视频预览任务
+        self.current_preview_task = asyncio.create_task(self._video_preview_loop(filename, folder))
+
+    async def _video_preview_loop(self, filename, folder):
+        """视频预览任务：读取本地视频文件并连续发送 JPEG 帧，支持任务取消"""
         video_path = os.path.abspath(os.path.join(folder, filename))
         if not os.path.exists(video_path):
             logger.error(f"视频文件不存在: {video_path}")
@@ -278,6 +307,9 @@ class WebSocketClient:
                 message = json.dumps({"cmd": "video_frame", "data": b64})
                 await self.ws.send(message)
                 await asyncio.sleep(0.033)  # 大约30帧每秒
+        except asyncio.CancelledError:
+            logger.info("视频预览任务被取消")
+            raise
         finally:
             cap.release()
             await self.ws.send(json.dumps({"cmd": "video_preview_end"}))
@@ -296,7 +328,7 @@ class WebSocketClient:
         try:
             with open(video_path, "rb") as f:
                 while True:
-                    chunk = f.read(1024*64)
+                    chunk = f.read(1024 * 64)
                     if not chunk:
                         break
                     b64 = base64.b64encode(chunk).decode('utf-8')
