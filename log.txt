@@ -1,34 +1,32 @@
 (circuit) coatcn@ubuntu:~/workspace/circuit_client$ python src/main.py 
-INFO:network.websocket_client:正在连接 WebSocket：ws://192.168.137.1:8000/api/v1/devices/commands
+INFO:network.websocket_client:正在连接 WebSocket：ws://192.168.1.103:8000/api/v1/devices/commands
 INFO:network.websocket_client:WebSocket 连接成功
-INFO:network.websocket_client:上报视频信息: {"cmd": "video_info_update", "device_id": "circuit_device_01", "video_list": [{"file_name": "circuit_device_01_0.mp4", "file_size": 2200168, "duration": 6.233333333333333, "creation_time": "2025-02-12 16:46:33"}]}
-INFO:network.websocket_client:上报模型信息: {"cmd": "model_info_update", "device_id": "circuit_device_01", "model_list": [{"file_name": "shengcai_50_best.pt", "file_size": 7414187, "creation_time": "2025-02-13 16:16:57"}, {"file_name": "shengcai_120_best.pt", "file_size": 6309553, "creation_time": "2025-02-13 16:17:18"}, {"file_name": "huangchong_best.pt", "file_size": 6231214, "creation_time": "2025-02-13 16:17:55"}]}
-INFO:network.websocket_client:发送心跳包: {"cmd": "heartbeat", "device_id": "circuit_device_01", "device_name": "circuit_device_01", "device_type": "raspberry_pi_4b", "camera_ids": [0], "ip_address": "192.168.137.17", "mac_address": "28:D0:43:1C:F9:81", "last_heartbeat": 1739437696}
-INFO:network.websocket_client:收到消息: {"cmd":"run_annotation","inspection_id":"circuit_device_01","params":{"video_file":"circuit_device_01_0.mp4","model_file":"shengcai_50_best.pt"}}
-INFO:network.websocket_client:收到 run_annotation 命令：video_path=/home/coatcn/workspace/circuit_client/videos/circuit_device_01_0.mp4, model_path=/home/coatcn/workspace/circuit_client/models/shengcai_50_best.pt
-INFO:network.websocket_client:执行命令: conda run -n yolocode python /home/coatcn/workspace/ultralytics/count3.py --source /home/coatcn/workspace/circuit_client/videos/circuit_device_01_0.mp4 --weights /home/coatcn/workspace/circuit_client/models/shengcai_50_best.pt
-INFO:network.websocket_client:发送心跳包: {"cmd": "heartbeat", "device_id": "circuit_device_01", "device_name": "circuit_device_01", "device_type": "raspberry_pi_4b", "camera_ids": [0], "ip_address": "192.168.137.17", "mac_address": "28:D0:43:1C:F9:81", "last_heartbeat": 1739437726}
-INFO:network.websocket_client:标注程序输出: 
-0: 480x640 (no detections), 66.2ms
-Speed: 8.8ms preprocess, 66.2ms inference, 6.2ms postprocess per image at shape (1, 3, 480, 640)
-
-
-ERROR:network.websocket_client:标注程序错误: /home/coatcn/anaconda3/envs/yolocode/lib/python3.8/site-packages/timm/models/layers/__init__.py:48: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
-  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
-Traceback (most recent call last):
-  File "/home/coatcn/workspace/ultralytics/count3.py", line 145, in <module>
-    main(opt)
-  File "/home/coatcn/workspace/ultralytics/count3.py", line 141, in main
-    run(**vars(opt))
-  File "/home/coatcn/workspace/ultralytics/count3.py", line 109, in run
-    cv2.setMouseCallback('标注窗口', mouse_callback)
-cv2.error: OpenCV(4.11.0) /io/opencv/modules/highgui/src/window_QT.cpp:753: error: (-27:Null pointer) NULL window handler in function 'cvSetMouseCallback'
-
-
-ERROR conda.cli.main_run:execute(49): `conda run python /home/coatcn/workspace/ultralytics/count3.py --source /home/coatcn/workspace/circuit_client/videos/circuit_device_01_0.mp4 --weights /home/coatcn/workspace/circuit_client/models/shengcai_50_best.pt` failed. (See above for error)
-
-ERROR:network.websocket_client:标注程序返回错误码: 1
-
+INFO:network.websocket_client:发送心跳包: {"cmd": "heartbeat", "device_id": "circuit_device_01", "device_name": "circuit_device_01", "device_type": "raspberry_pi_4b", "camera_ids": ["0", "1", "2"], "ip_address": "192.168.1.107", "mac_address": "28:D0:43:1C:F9:81", "last_heartbeat": 1740130480, "video_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 13702383, "duration": 12.566666666666666, "creation_time": "2025-02-14 14:31:53"}, {"file_name": "circuit_device_01_0_20250214172042.mp4", "file_size": 992412, "duration": 4.433333333333334, "creation_time": "2025-02-14 17:20:52"}, {"file_name": "circuit_device_01_2_20250219154208.mp4", "file_size": 155914, "duration": 0.9666666666666667, "creation_time": "2025-02-19 15:42:11"}, {"file_name": "circuit_device_01_0_20250220100413.mp4", "file_size": 256641, "duration": 2.7, "creation_time": "2025-02-20 10:04:17"}, {"file_name": "circuit_device_01_0_20250221173151.mp4", "file_size": 1524989, "duration": 3.5, "creation_time": "2025-02-21 17:31:55"}, {"file_name": "circuit_device_01_0_20250221173120.mp4", "file_size": 2793185, "duration": 6.133333333333334, "creation_time": "2025-02-21 17:31:26"}], "outputs_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 14549789, "duration": 12.566666666666666, "creation_time": "2025-02-14 16:41:50"}, {"file_name": "ee720098d0e92fc6ddd415c48ba439a9 - Trim.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-14 17:01:47"}, {"file_name": "123.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-20 10:10:59"}], "model_list": [{"file_name": "shengcai_50_best.pt", "file_size": 7414187, "creation_time": "2025-02-13 16:16:57"}, {"file_name": "shengcai_120_best.pt", "file_size": 6309553, "creation_time": "2025-02-13 16:17:18"}, {"file_name": "huangchong_best.pt", "file_size": 6231214, "creation_time": "2025-02-13 16:17:55"}]}
+INFO:network.websocket_client:收到消息: {"cmd":"start_inspection","inspection_id":"circuit_device_01","camera_id":"2"}
+INFO:network.websocket_client:开始巡检: 设备=circuit_device_01, 仅摄像头=2
+INFO:camera.camera_manager:摄像头 2 开始录制到文件: videos/circuit_device_01_2_20250221173451.mp4
+INFO:network.websocket_client:检测到文件变化，立即发送心跳包
+[mov,mp4,m4a,3gp,3g2,mj2 @ 0x6a4d090] moov atom not found
+INFO:network.websocket_client:发送心跳包: {"cmd": "heartbeat", "device_id": "circuit_device_01", "device_name": "circuit_device_01", "device_type": "raspberry_pi_4b", "camera_ids": ["0", "1", "2"], "ip_address": "192.168.1.107", "mac_address": "28:D0:43:1C:F9:81", "last_heartbeat": 1740130491, "video_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 13702383, "duration": 12.566666666666666, "creation_time": "2025-02-14 14:31:53"}, {"file_name": "circuit_device_01_0_20250214172042.mp4", "file_size": 992412, "duration": 4.433333333333334, "creation_time": "2025-02-14 17:20:52"}, {"file_name": "circuit_device_01_2_20250219154208.mp4", "file_size": 155914, "duration": 0.9666666666666667, "creation_time": "2025-02-19 15:42:11"}, {"file_name": "circuit_device_01_0_20250220100413.mp4", "file_size": 256641, "duration": 2.7, "creation_time": "2025-02-20 10:04:17"}, {"file_name": "circuit_device_01_0_20250221173151.mp4", "file_size": 1524989, "duration": 3.5, "creation_time": "2025-02-21 17:31:55"}, {"file_name": "circuit_device_01_0_20250221173120.mp4", "file_size": 2793185, "duration": 6.133333333333334, "creation_time": "2025-02-21 17:31:26"}, {"file_name": "circuit_device_01_2_20250221173451.mp4", "file_size": 44, "duration": 0, "creation_time": "2025-02-21 17:34:51"}], "outputs_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 14549789, "duration": 12.566666666666666, "creation_time": "2025-02-14 16:41:50"}, {"file_name": "ee720098d0e92fc6ddd415c48ba439a9 - Trim.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-14 17:01:47"}, {"file_name": "123.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-20 10:10:59"}], "model_list": [{"file_name": "shengcai_50_best.pt", "file_size": 7414187, "creation_time": "2025-02-13 16:16:57"}, {"file_name": "shengcai_120_best.pt", "file_size": 6309553, "creation_time": "2025-02-13 16:17:18"}, {"file_name": "huangchong_best.pt", "file_size": 6231214, "creation_time": "2025-02-13 16:17:55"}]}
+INFO:network.websocket_client:收到消息: {"cmd":"stop_inspection","inspection_id":"circuit_device_01","camera_id":"2"}
+INFO:network.websocket_client:结束巡检: 设备=circuit_device_01, camera_id=2
+INFO:camera.camera_manager:摄像头 2 停止录制
+INFO:network.websocket_client:检测到文件变化，立即发送心跳包
+INFO:network.websocket_client:发送心跳包: {"cmd": "heartbeat", "device_id": "circuit_device_01", "device_name": "circuit_device_01", "device_type": "raspberry_pi_4b", "camera_ids": ["0", "1", "2"], "ip_address": "192.168.1.107", "mac_address": "28:D0:43:1C:F9:81", "last_heartbeat": 1740130495, "video_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 13702383, "duration": 12.566666666666666, "creation_time": "2025-02-14 14:31:53"}, {"file_name": "circuit_device_01_0_20250214172042.mp4", "file_size": 992412, "duration": 4.433333333333334, "creation_time": "2025-02-14 17:20:52"}, {"file_name": "circuit_device_01_2_20250219154208.mp4", "file_size": 155914, "duration": 0.9666666666666667, "creation_time": "2025-02-19 15:42:11"}, {"file_name": "circuit_device_01_0_20250220100413.mp4", "file_size": 256641, "duration": 2.7, "creation_time": "2025-02-20 10:04:17"}, {"file_name": "circuit_device_01_0_20250221173151.mp4", "file_size": 1524989, "duration": 3.5, "creation_time": "2025-02-21 17:31:55"}, {"file_name": "circuit_device_01_0_20250221173120.mp4", "file_size": 2793185, "duration": 6.133333333333334, "creation_time": "2025-02-21 17:31:26"}, {"file_name": "circuit_device_01_2_20250221173451.mp4", "file_size": 138971, "duration": 1.0666666666666667, "creation_time": "2025-02-21 17:34:54"}], "outputs_list": [{"file_name": "circuit_device_01_0_666.mp4", "file_size": 14549789, "duration": 12.566666666666666, "creation_time": "2025-02-14 16:41:50"}, {"file_name": "ee720098d0e92fc6ddd415c48ba439a9 - Trim.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-14 17:01:47"}, {"file_name": "123.mp4", "file_size": 1058788, "duration": 2.52, "creation_time": "2025-02-20 10:10:59"}], "model_list": [{"file_name": "shengcai_50_best.pt", "file_size": 7414187, "creation_time": "2025-02-13 16:16:57"}, {"file_name": "shengcai_120_best.pt", "file_size": 6309553, "creation_time": "2025-02-13 16:17:18"}, {"file_name": "huangchong_best.pt", "file_size": 6231214, "creation_time": "2025-02-13 16:17:55"}]}
+^CTraceback (most recent call last):
+  File "/home/coatcn/workspace/circuit_client/src/main.py", line 36, in <module>
+    asyncio.run(main())
+  File "/home/coatcn/anaconda3/envs/circuit/lib/python3.10/asyncio/runners.py", line 44, in run
+    return loop.run_until_complete(main)
+  File "/home/coatcn/anaconda3/envs/circuit/lib/python3.10/asyncio/base_events.py", line 636, in run_until_complete
+    self.run_forever()
+  File "/home/coatcn/anaconda3/envs/circuit/lib/python3.10/asyncio/base_events.py", line 603, in run_forever
+    self._run_once()
+  File "/home/coatcn/anaconda3/envs/circuit/lib/python3.10/asyncio/base_events.py", line 1871, in _run_once
+    event_list = self._selector.select(timeout)
+  File "/home/coatcn/anaconda3/envs/circuit/lib/python3.10/selectors.py", line 469, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
+KeyboardInterrupt
 
 
 

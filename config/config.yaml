@@ -27,6 +27,8 @@ camera:
           # 如果有更多摄像头，可以加在这里
     - id: 1
       name: "Camera 2"
+    - id: 2
+      name: "Camera 3"
   video_config:             # 默认视频配置
     format: "mp4"
     bitrate: 2000000        # 2Mbps
