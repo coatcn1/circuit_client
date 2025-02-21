@@ -28,3 +28,16 @@ cv2.error: OpenCV(4.11.0) /io/opencv/modules/highgui/src/window_QT.cpp:753: erro
 ERROR conda.cli.main_run:execute(49): `conda run python /home/coatcn/workspace/ultralytics/count3.py --source /home/coatcn/workspace/circuit_client/videos/circuit_device_01_0.mp4 --weights /home/coatcn/workspace/circuit_client/models/shengcai_50_best.pt` failed. (See above for error)
 
 ERROR:network.websocket_client:标注程序返回错误码: 1
+
+
+
+
+
+
+
+
+
+
+(circuit) coatcn@ubuntu:~/workspace/circuit_client$ python src/main.py 
+INFO:network.websocket_client:正在连接 WebSocket：ws://192.168.8.165:8000/api/v1/devices/commands
+ERROR:network.websocket_client:连接时出现意外错误: did not receive a valid HTTP response
