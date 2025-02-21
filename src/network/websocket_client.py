@@ -20,7 +20,7 @@ class WebSocketClient:
         self.current_preview_task = None
 
     async def connect(self):
-        """建立 WebSocket 连接"""
+        """建立 WebSocket 连接，并输出详细错误信息"""
         config = self.device_manager.config
         ws_url = config['server']['ws_url']
 
@@ -36,15 +36,16 @@ class WebSocketClient:
             asyncio.create_task(self.watch_file_changes())
 
         except exceptions.InvalidStatus as e:
-            logger.error(f"WebSocket 连接失败: {e}")
+            # 输出详细的 HTTP 状态码和响应头信息
+            logger.error(f"WebSocket 连接失败: Invalid HTTP status {e.status_code} with headers {e.headers}")
         except Exception as e:
-            logger.error(f"连接时出现意外错误: {e}")
+            logger.exception("连接时出现意外错误")
 
     async def send_heartbeat_message(self):
         """构建并发送心跳包"""
         try:
             if self.ws:
-                camera_ids = [device['id'] for device in self.device_manager.config["camera"]["devices"]]
+                camera_ids = [str(device['id']) for device in self.device_manager.config["camera"]["devices"]]
 
                 # 收集 videos 文件夹视频信息
                 video_list = []
@@ -125,7 +126,7 @@ class WebSocketClient:
                 await self.ws.send(heartbeat_message)
                 logger.info(f"发送心跳包: {heartbeat_message}")
         except Exception as e:
-            logger.error(f"心跳发送失败: {e}")
+            logger.exception("心跳发送失败")
 
     async def _heartbeat(self):
         """定时发送心跳包"""
@@ -133,14 +134,14 @@ class WebSocketClient:
             try:
                 await self.send_heartbeat_message()
             except Exception as e:
-                logger.error(f"心跳发送失败: {e}")
+                logger.exception("心跳发送失败")
             await asyncio.sleep(30)
 
     async def watch_file_changes(self):
         """
         监控指定目录中的文件变化（增删改）
         目录包括：videos、outputs 以及模型目录
-        一旦检测到变化，立即发送一次心跳包
+        一旦检测到变化，立即发送心跳包
         """
         directories = ["videos", "outputs", self.device_manager.config.get("model_path", "models")]
         previous_snapshot = {}
@@ -184,7 +185,7 @@ class WebSocketClient:
                     except json.JSONDecodeError as e:
                         logger.error(f"JSON解码失败: {e} - 原始消息: {message}")
             except Exception as e:
-                logger.error(f"消息处理失败: {e}")
+                logger.exception("消息处理失败")
 
     async def _process_message(self, data):
         cmd = data.get("cmd")
@@ -202,7 +203,6 @@ class WebSocketClient:
             await self._handle_video_download(data)
         elif cmd == "delete_video":
             await self._handle_delete_video(data)
-        # 新增：处理上传视频命令
         elif cmd == "upload_video_start":
             await self._handle_upload_video_start(data)
         elif cmd == "upload_video_chunk":
@@ -211,27 +211,46 @@ class WebSocketClient:
             await self._handle_upload_video_end(data)
 
     async def _handle_start_inspection(self, data):
+        """
+        支持单个摄像头或全部摄像头。
+        如果 data 中带有 camera_id，则只启动该摄像头的录制；
+        否则遍历所有摄像头。
+        """
         try:
             inspection_id = data.get("inspection_id")
+            camera_id = data.get("camera_id")
             video_config = self.device_manager.config["camera"]["video_config"]
-            logger.info(f"开始巡检: {inspection_id}，视频配置: {video_config}")
-            camera_devices = self.device_manager.config["camera"]["devices"]
-            for camera in camera_devices:
-                camera_id = camera['id']
+            if camera_id:
+                logger.info(f"开始巡检: 设备={inspection_id}, 仅摄像头={camera_id}")
                 await self.camera_manager.start_recording(camera_id, video_config, inspection_id=inspection_id)
+            else:
+                logger.info(f"开始巡检: {inspection_id}，视频配置: {video_config}")
+                camera_devices = self.device_manager.config["camera"]["devices"]
+                for camera in camera_devices:
+                    cam_id = str(camera['id'])
+                    await self.camera_manager.start_recording(cam_id, video_config, inspection_id=inspection_id)
         except Exception as e:
-            logger.error(f"开始巡检命令处理失败: {e}")
+            logger.exception("开始巡检命令处理失败")
 
     async def _handle_stop_inspection(self, data):
+        """
+        支持单个摄像头或全部摄像头。
+        如果 data 中带有 camera_id，则只停止该摄像头的录制；
+        否则遍历所有摄像头。
+        """
         try:
             inspection_id = data.get("inspection_id")
-            logger.info(f"结束巡检: {inspection_id}")
-            camera_devices = self.device_manager.config["camera"]["devices"]
-            for camera in camera_devices:
-                camera_id = camera['id']
+            camera_id = data.get("camera_id")
+            logger.info(f"结束巡检: 设备={inspection_id}, camera_id={camera_id if camera_id else 'ALL'}")
+            if camera_id:
                 await self.camera_manager.stop_recording(camera_id)
+            else:
+                camera_devices = self.device_manager.config["camera"]["devices"]
+                for camera in camera_devices:
+                    cam_id = str(camera['id'])
+                    await self.camera_manager.stop_recording(cam_id)
         except Exception as e:
-            logger.error(f"结束巡检命令处理失败: {e}")
+            logger.exception("结束巡检命令处理失败")
 
     async def _handle_run_annotation(self, data):
         """处理运行视频标注程序命令"""
@@ -268,7 +287,7 @@ class WebSocketClient:
             else:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
         except Exception as e:
-            logger.error(f"运行标注程序失败: {e}")
+            logger.exception("运行标注程序失败")
 
     async def _handle_start_video_preview(self, data):
         """处理服务端下发的视频预览请求：如果已有预览任务则提前取消，启动新的视频预览任务"""
@@ -306,7 +325,7 @@ class WebSocketClient:
                 b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
                 message = json.dumps({"cmd": "video_frame", "data": b64})
                 await self.ws.send(message)
-                await asyncio.sleep(0.033)  # 大约30帧每秒
+                await asyncio.sleep(0.033)  # 大约30帧/秒
         except asyncio.CancelledError:
             logger.info("视频预览任务被取消")
             raise
@@ -337,7 +356,7 @@ class WebSocketClient:
                     await asyncio.sleep(0.01)
             await self.ws.send(json.dumps({"cmd": "video_download_end"}))
         except Exception as e:
-            logger.error(f"视频下载失败: {e}")
+            logger.exception("视频下载失败")
 
     async def _handle_delete_video(self, data):
         """处理服务端下发的删除视频请求：删除本地视频文件并返回结果"""
@@ -366,13 +385,18 @@ class WebSocketClient:
         logger.info(f"开始上传视频: {filename}")
 
     async def _handle_upload_video_chunk(self, data):
-        import base64
-        chunk_data = base64.b64decode(data.get("data"))
-        if hasattr(self, "upload_file") and self.upload_file:
-            self.upload_file.write(chunk_data)
+        try:
+            chunk_data = base64.b64decode(data.get("data"))
+            if hasattr(self, "upload_file") and self.upload_file:
+                self.upload_file.write(chunk_data)
+        except Exception as e:
+            logger.exception("处理上传视频块时失败")
 
     async def _handle_upload_video_end(self, data):
-        if hasattr(self, "upload_file") and self.upload_file:
-            self.upload_file.close()
-            logger.info(f"上传视频结束: {data.get('filename')}")
-            self.upload_file = None
+        try:
+            if hasattr(self, "upload_file") and self.upload_file:
+                self.upload_file.close()
+                logger.info(f"上传视频结束: {data.get('filename')}")
+                self.upload_file = None
+        except Exception as e:
+            logger.exception("处理上传视频结束时失败")

@@ -69,9 +69,13 @@ class CameraManager:
             logger.error(f"停止录制失败: {e}")
 
     def get_camera_index(self, camera_id):
-        # 根据摄像头ID映射到对应的摄像头索引
-        camera_map = {
-            "cam_01": 0,
-            "cam_02": 1
-        }
-        return camera_map.get(camera_id, 0)
+        """
+        根据摄像头ID映射到对应的摄像头索引
+        你也可以在这里扩展映射规则，比如 camera_id="1" -> index=0 等
+        或直接将 camera_id 视作整数索引使用。
+        """
+        # 示例：如果传入的是字符串 "0" 或者 0，都映射为 index=0
+        try:
+            return int(camera_id)
+        except:
+            return 0

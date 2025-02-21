@@ -24,6 +24,9 @@ camera:
   devices:                   # 摄像头配置列表
     - id: 0
       name: "Camera 1"
+          # 如果有更多摄像头，可以加在这里
+    - id: 1
+      name: "Camera 2"
   video_config:             # 默认视频配置
     format: "mp4"
     bitrate: 2000000        # 2Mbps
