@@ -4,8 +4,10 @@
 # 123
 
 server:
-  url: "192.168.137.1:8000"
-  ws_url: "ws://192.168.137.1:8000/api/v1/devices/commands"
+  url: "192.168.8.165:8000"
+  ws_url: "ws://192.168.8.165:8000/api/v1/devices/commands"
+  # url: "192.168.137.1:8000"
+  # ws_url: "ws://192.168.137.1:8000/api/v1/devices/commands"
   
 device:
   name: "circuit_device_01"  # 设备唯一标识符
