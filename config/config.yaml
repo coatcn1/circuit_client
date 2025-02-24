@@ -13,8 +13,8 @@ server:
   # url: "123.127.162.165:8000"
   # ws_url: "ws://123.127.162.165:8000/api/v1/devices/commands"
 
-  url: "192.168.1.103:8000"
-  ws_url: "ws://192.168.1.103:8000/api/v1/devices/commands"
+  url: "192.168.216.168:8000"
+  ws_url: "ws://192.168.216.168:8000/api/v1/devices/commands"
   
 device:
   name: "circuit_device_01"  # 设备唯一标识符
