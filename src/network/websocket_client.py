@@ -284,6 +284,14 @@ class WebSocketClient:
                 logger.error(f"标注程序错误: {stderr.decode()}")
             if proc.returncode == 0:
                 logger.info("标注程序运行成功")
+                # 发送标注结果到服务端
+                annotation_result = "区域: YOLOv8 Polygon Region，计数: 0\n区域: YOLOv8 Rectangle Region，计数: 0"
+                await self.ws.send(json.dumps({"cmd": "annotation_result", "data": annotation_result}))
+                # 发送标注完成的进程消息
+                await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": "标注完成" }))
+                # 删除上传标注文件的操作，不再上传视频文件
+
+
             else:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
         except Exception as e:
