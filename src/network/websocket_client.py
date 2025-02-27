@@ -257,10 +257,7 @@ class WebSocketClient:
             logger.exception("结束巡检命令处理失败")
 
     async def _handle_run_annotation(self, data):
-        """
-        处理运行视频标注程序命令，并在标注成功后发送标注结束信息至服务端。
-        这里不再上传标注好的文件，只发送标注结束后的信息。
-        """
+        """处理运行视频标注程序命令，并在标注成功后发送标注结束信息至服务端"""
         try:
             params = data.get("params", {})
             video_file = params.get("video_file")
@@ -301,12 +298,14 @@ class WebSocketClient:
                 }
                 await self.ws.send(json.dumps(annotation_msg))
                 logger.info(f"发送标注结果: {annotation_msg}")
+                # 原有上传标注文件的调用已移除
             else:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
                 await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序错误，返回码：{proc.returncode}"}))
         except Exception as e:
             logger.exception("运行标注程序失败")
             await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序异常: {str(e)}"}))
+
 
     def parse_annotation_result(self, output):
         """
