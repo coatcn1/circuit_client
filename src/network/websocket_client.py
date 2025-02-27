@@ -7,6 +7,8 @@ import datetime
 import time
 import asyncio.subprocess
 import base64
+import aiohttp
+import re  # 用于正则解析标注结果
 from websockets import connect, exceptions
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,6 @@ class WebSocketClient:
             asyncio.create_task(self.watch_file_changes())
 
         except exceptions.InvalidStatus as e:
-            # 输出详细的 HTTP 状态码和响应头信息
             logger.error(f"WebSocket 连接失败: Invalid HTTP status {e.status_code} with headers {e.headers}")
         except Exception as e:
             logger.exception("连接时出现意外错误")
@@ -209,6 +210,10 @@ class WebSocketClient:
             await self._handle_upload_video_chunk(data)
         elif cmd == "upload_video_end":
             await self._handle_upload_video_end(data)
+        # 新增处理标注结果的消息（若其他终端需要使用）
+        elif cmd == "annotation_result":
+            logger.info(f"收到标注结果: {data}")
+        # 其他命令可以按需扩展
 
     async def _handle_start_inspection(self, data):
         """
@@ -235,8 +240,7 @@ class WebSocketClient:
     async def _handle_stop_inspection(self, data):
         """
         支持单个摄像头或全部摄像头。
-        如果 data 中带有 camera_id，则只停止该摄像头的录制；
-        否则遍历所有摄像头。
+        如果 data 中带有 camera_id，则只停止该摄像头的录制；否则遍历所有摄像头。
         """
         try:
             inspection_id = data.get("inspection_id")
@@ -253,7 +257,10 @@ class WebSocketClient:
             logger.exception("结束巡检命令处理失败")
 
     async def _handle_run_annotation(self, data):
-        """处理运行视频标注程序命令"""
+        """
+        处理运行视频标注程序命令，并在标注成功后发送标注结束信息至服务端。
+        这里不再上传标注好的文件，只发送标注结束后的信息。
+        """
         try:
             params = data.get("params", {})
             video_file = params.get("video_file")
@@ -284,27 +291,46 @@ class WebSocketClient:
                 logger.error(f"标注程序错误: {stderr.decode()}")
             if proc.returncode == 0:
                 logger.info("标注程序运行成功")
-                # 发送标注结果到服务端
-                annotation_result = "区域: YOLOv8 Polygon Region，计数: 0\n区域: YOLOv8 Rectangle Region，计数: 0"
-                await self.ws.send(json.dumps({"cmd": "annotation_result", "data": annotation_result}))
-                # 发送标注完成的进程消息
-                await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": "标注完成" }))
-                # 删除上传标注文件的操作，不再上传视频文件
-
-
+                # 解析标注结果：从输出中匹配每个区域的计数
+                counts = self.parse_annotation_result(stdout.decode())
+                # 发送标注结果消息到服务端，包含视频文件名和计数结果
+                annotation_msg = {
+                    "cmd": "annotation_result",
+                    "video_file": video_file,
+                    "counts": counts
+                }
+                await self.ws.send(json.dumps(annotation_msg))
+                logger.info(f"发送标注结果: {annotation_msg}")
             else:
                 logger.error(f"标注程序返回错误码: {proc.returncode}")
+                await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序错误，返回码：{proc.returncode}"}))
         except Exception as e:
             logger.exception("运行标注程序失败")
+            await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序异常: {str(e)}"}))
+
+    def parse_annotation_result(self, output):
+        """
+        解析标注程序输出，提取各区域计数。
+        假设输出中包含类似：
+          "区域: YOLOv8 Polygon Region，计数: 0"
+        """
+        result = {}
+        pattern = re.compile(r"区域:\s*(.+?)，计数:\s*(\d+)")
+        for line in output.splitlines():
+            match = pattern.search(line)
+            if match:
+                region = match.group(1)
+                count = int(match.group(2))
+                result[region] = count
+        return result
 
     async def _handle_start_video_preview(self, data):
-        """处理服务端下发的视频预览请求：如果已有预览任务则提前取消，启动新的视频预览任务"""
+        """处理服务端下发的视频预览请求"""
         filename = data.get("filename")
         folder = data.get("folder", "videos")
         if not filename:
             logger.error("start_video_preview 缺少 filename")
             return
-        # 如果已有正在进行的视频预览任务，则取消它
         if self.current_preview_task is not None and not self.current_preview_task.done():
             logger.info("取消当前正在进行的视频预览任务")
             self.current_preview_task.cancel()
@@ -312,7 +338,6 @@ class WebSocketClient:
                 await self.current_preview_task
             except asyncio.CancelledError:
                 logger.info("当前视频预览任务已取消")
-        # 启动新的视频预览任务
         self.current_preview_task = asyncio.create_task(self._video_preview_loop(filename, folder))
 
     async def _video_preview_loop(self, filename, folder):
@@ -333,7 +358,7 @@ class WebSocketClient:
                 b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
                 message = json.dumps({"cmd": "video_frame", "data": b64})
                 await self.ws.send(message)
-                await asyncio.sleep(0.033)  # 大约30帧/秒
+                await asyncio.sleep(0.033)
         except asyncio.CancelledError:
             logger.info("视频预览任务被取消")
             raise
