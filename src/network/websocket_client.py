@@ -10,6 +10,16 @@ import base64
 import aiohttp
 import re  # 用于正则解析标注结果
 from websockets import connect, exceptions
+import aiofiles  
+import urllib.parse 
+import requests
+
+# 已有常量
+CHUNK_SIZE = 32 * 1024
+WS_MAX_SIZE = 32 * 1024 * 1024     # 32 MB – 要与服务端保持一致
+PING_INTERVAL = 20                 # s
+PING_TIMEOUT  = 20                 # s
+RETRY_DELAY   = 5                  # s
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +31,83 @@ class WebSocketClient:
         # 用于保存当前正在进行的视频预览任务
         self.current_preview_task = None
 
-    async def connect(self):
-        """建立 WebSocket 连接，并输出详细错误信息"""
-        config = self.device_manager.config
-        ws_url = config['server']['ws_url']
+    # async def connect(self):
+    #     """建立 WebSocket 连接，并输出详细错误信息"""
+    #     config = self.device_manager.config
+    #     ws_url = config['server']['ws_url']
 
-        try:
-            logger.info(f"正在连接 WebSocket：{ws_url}")
-            self.ws = await connect(ws_url)
-            logger.info("WebSocket 连接成功")
+    #     try:
+    #         logger.info(f"正在连接 WebSocket：{ws_url}")
+    #         self.ws = await connect(ws_url)
+    #         logger.info("WebSocket 连接成功")
 
-            # 启动心跳和消息处理任务
-            asyncio.create_task(self._heartbeat())
-            asyncio.create_task(self._handle_messages())
-            # 启动文件变化监控任务：监控 videos、outputs 和模型目录
-            asyncio.create_task(self.watch_file_changes())
+    #         # 启动心跳和消息处理任务
+    #         asyncio.create_task(self._heartbeat())
+    #         asyncio.create_task(self._handle_messages())
+    #         # 启动文件变化监控任务：监控 videos、outputs 和模型目录
+    #         asyncio.create_task(self.watch_file_changes())
 
-        except exceptions.InvalidStatus as e:
-            logger.error(f"WebSocket 连接失败: Invalid HTTP status {e.status_code} with headers {e.headers}")
-        except Exception as e:
-            logger.exception("连接时出现意外错误")
+    #     except exceptions.InvalidStatus as e:
+    #         logger.error(f"WebSocket 连接失败: Invalid HTTP status {e.status_code} with headers {e.headers}")
+    #     except Exception as e:
+    #         logger.exception("连接时出现意外错误")
+# =====================================
+# 连接入口改成“循环重连”版本
+# =====================================
+    async def connect_forever(self):
+        """不断尝试连接，掉线后自动重连"""
+        while True:
+            try:
+                await self._connect_once()
+                # 正常返回（ws 关闭）后等待 RETRY_DELAY 再连
+            except Exception:
+                logger.exception("WebSocket 连接或运行时异常，%s 秒后重试", RETRY_DELAY)
+            await asyncio.sleep(RETRY_DELAY)
 
+    async def _connect_once(self):
+        """建立一次连接，直至连接关闭才返回"""
+        ws_url = self.device_manager.config['server']['ws_url']
+        logger.info("Connecting WebSocket: %s", ws_url)
+
+        async with connect(
+            ws_url,
+            ping_interval=PING_INTERVAL,
+            ping_timeout=PING_TIMEOUT,
+            max_size=WS_MAX_SIZE
+        ) as self.ws:                                   # ★ 带 ping & max_size
+            logger.info("WebSocket connected")
+            # 并发任务：心跳、文件监控、消息循环
+            tasks = [
+                asyncio.create_task(self._heartbeat()),
+                asyncio.create_task(self.watch_file_changes()),
+                asyncio.create_task(self._handle_messages())
+            ]
+            # 等其中任何一个抛异常或 ws 关闭
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_EXCEPTION
+            )
+            for t in pending: t.cancel()                # 取消剩余
+            logger.warning("WebSocket 断开，准备重连")
+
+# =====================================
+# _handle_messages 捕获关闭异常后直接 return
+# =====================================
+    async def _handle_messages(self):
+        while True:
+            try:
+                msg = await self.ws.recv()
+                if msg is None:
+                    logger.warning("服务器关闭 WS")
+                    return                             # 退出，外层重连
+                data = json.loads(msg)
+                await self._process_message(data)
+            except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed):
+                # 主动关闭或取消
+                return
+            except Exception:
+                logger.exception("消息处理失败")
+
+                
     async def send_heartbeat_message(self):
         """构建并发送心跳包"""
         try:
@@ -125,7 +191,7 @@ class WebSocketClient:
                     "model_list": model_list
                 })
                 await self.ws.send(heartbeat_message)
-                logger.info(f"发送心跳包: {heartbeat_message}")
+                # logger.info(f"发送心跳包: {heartbeat_message}")
         except Exception as e:
             logger.exception("心跳发送失败")
 
@@ -214,6 +280,10 @@ class WebSocketClient:
         elif cmd == "annotation_result":
             logger.info(f"收到标注结果: {data}")
         # 其他命令可以按需扩展
+        elif cmd == "upload_outputs":
+            await self._handle_upload_outputs(data)
+        elif cmd == "upload_outputs_ack":
+            logger.info(f"服务端确认 outputs 上传完成: {data.get('filename')}")
 
     async def _handle_start_inspection(self, data):
         """
@@ -432,3 +502,88 @@ class WebSocketClient:
                 self.upload_file = None
         except Exception as e:
             logger.exception("处理上传视频结束时失败")
+
+# ==========================================================
+# 统一推导服务器 HTTP 根地址：新增对 server.url 的兜底处理
+# ==========================================================
+    def _get_http_base_url(self) -> str:
+        """
+        ⬇ 解析顺序（前一个满足就返回）：
+        1) 明确配置 server.http_url
+        2) server.url 已带 http/https 前缀
+        3) server.url 仅 IP:PORT —— 自动补 "http://"
+        4) 从 ws_url 自动推导（ws→http / wss→https）
+        """
+        srv_cfg = self.device_manager.config["server"]
+
+        # 1) 明确 http_url
+        http_url = srv_cfg.get("http_url")
+        if http_url:
+            return http_url.rstrip("/")
+
+        # 2-3) server.url
+        raw_url = srv_cfg.get("url")
+        if raw_url:
+            if raw_url.startswith(("http://", "https://")):
+                return raw_url.rstrip("/")
+            return f"http://{raw_url.rstrip('/')}"
+
+        # 4) fallback: 从 ws_url 推导
+        ws_url = srv_cfg["ws_url"]
+        parsed = urllib.parse.urlparse(ws_url)
+        scheme = "https" if parsed.scheme == "wss" else "http"
+        return f"{scheme}://{parsed.netloc}"
+
+
+
+    async def _upload_outputs_http(self, filename: str, folder: str = "outputs"):
+        """
+        通过同步 requests 做文件上传，放到线程池中执行，避免 multipart/form-data 兼容问题。
+        """
+        base_url   = self._get_http_base_url()
+        device_id  = self.device_manager.config["device"]["name"]
+        upload_url = f"{base_url}/api/v1/outputs/upload?deviceId={device_id}"
+        file_path  = os.path.join(folder, filename)
+
+        if not os.path.exists(file_path):
+            logger.error("输出文件不存在: %s", file_path)
+            return
+
+        logger.info("开始 HTTP 上传（requests）：%s → %s", file_path, upload_url)
+
+        def sync_upload():
+            try:
+                with open(file_path, "rb") as f:
+                    resp = requests.post(
+                        upload_url,
+                        files={"file": (filename, f, "video/mp4")},
+                        timeout=None
+                    )
+                return resp.status_code, resp.text
+            except Exception as e:
+                return None, str(e)
+
+        # 在默认线程池中运行
+        status, text = await asyncio.get_event_loop().run_in_executor(None, sync_upload)
+
+        if status == 200:
+            logger.info("✔ 上传成功，服务器响应: %s", text)
+        elif status is None:
+            logger.error("✘ 上传异常: %s", text)
+        else:
+            logger.error("✘ 上传失败（%s）：%s", status, text)
+
+
+
+
+# ==========================================================
+# 收到服务器指令后触发上传
+# ==========================================================
+    async def _handle_upload_outputs(self, data):
+        filename = data.get("filename")
+        folder   = data.get("folder", "outputs")
+        if not filename:
+            logger.error("upload_outputs 缺少文件名")
+            return
+        logger.info("服务器要求上传 outputs: %s", filename)
+        await self._upload_outputs_http(filename, folder)

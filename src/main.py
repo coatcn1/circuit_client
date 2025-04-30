@@ -23,7 +23,8 @@ async def main():
         storage_manager = StorageManager()      # 存储管理（如果需要）
         
         ws_client = WebSocketClient(device_manager, camera_manager)
-        await ws_client.connect()
+        await ws_client.connect_forever()
+
         
         # 保持程序运行
         while True:
