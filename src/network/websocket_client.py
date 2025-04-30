@@ -55,17 +55,26 @@ class WebSocketClient:
 # 连接入口改成“循环重连”版本
 # =====================================
     async def connect_forever(self):
-        """不断尝试连接，掉线后自动重连"""
+        """
+        不断尝试连接，任意子任务（心跳/文件监控/消息循环）结束后
+        都重新建立连接，不再卡死。
+        """
         while True:
             try:
                 await self._connect_once()
-                # 正常返回（ws 关闭）后等待 RETRY_DELAY 再连
             except Exception:
-                logger.exception("WebSocket 连接或运行时异常，%s 秒后重试", RETRY_DELAY)
+                logger.exception("WebSocket 连接失败，%s 秒后重试", RETRY_DELAY)
             await asyncio.sleep(RETRY_DELAY)
 
     async def _connect_once(self):
-        """建立一次连接，直至连接关闭才返回"""
+        """
+        建立一次连接，连接内部并发三个子任务：
+          1. _heartbeat()
+          2. watch_file_changes()
+          3. _handle_messages()
+        只要其中任意一个自然结束（正常或异常），就取消剩余任务并退出，
+        让 connect_forever 进行下次重连。
+        """
         ws_url = self.device_manager.config['server']['ws_url']
         logger.info("Connecting WebSocket: %s", ws_url)
 
@@ -74,38 +83,29 @@ class WebSocketClient:
             ping_interval=PING_INTERVAL,
             ping_timeout=PING_TIMEOUT,
             max_size=WS_MAX_SIZE
-        ) as self.ws:                                   # ★ 带 ping & max_size
+        ) as self.ws:
             logger.info("WebSocket connected")
-            # 并发任务：心跳、文件监控、消息循环
+
+            # 启动三个子任务
             tasks = [
                 asyncio.create_task(self._heartbeat()),
                 asyncio.create_task(self.watch_file_changes()),
                 asyncio.create_task(self._handle_messages())
             ]
-            # 等其中任何一个抛异常或 ws 关闭
-            done, pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_EXCEPTION
-            )
-            for t in pending: t.cancel()                # 取消剩余
-            logger.warning("WebSocket 断开，准备重连")
 
-# =====================================
-# _handle_messages 捕获关闭异常后直接 return
-# =====================================
-    async def _handle_messages(self):
-        while True:
-            try:
-                msg = await self.ws.recv()
-                if msg is None:
-                    logger.warning("服务器关闭 WS")
-                    return                             # 退出，外层重连
-                data = json.loads(msg)
-                await self._process_message(data)
-            except (asyncio.CancelledError, websockets.exceptions.ConnectionClosed):
-                # 主动关闭或取消
-                return
-            except Exception:
-                logger.exception("消息处理失败")
+            # 任意一个完成（正常 return 或抛异常）就触发
+            done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            # 取消没完成的
+            for t in pending:
+                t.cancel()
+            # 等待取消后的清理
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            logger.warning("WebSocket 子任务结束，准备重连")
+
 
                 
     async def send_heartbeat_message(self):
@@ -196,63 +196,83 @@ class WebSocketClient:
             logger.exception("心跳发送失败")
 
     async def _heartbeat(self):
-        """定时发送心跳包"""
+        """定时发送心跳包，断连后退出循环由 connect_forever 重连"""
         while True:
             try:
                 await self.send_heartbeat_message()
-            except Exception as e:
-                logger.exception("心跳发送失败")
-            await asyncio.sleep(30)
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                logger.info("_heartbeat 被取消，退出心跳循环")
+                break
+            except exceptions.ConnectionClosedError:
+                logger.warning("心跳发送时 WebSocket 已关闭，退出心跳循环")
+                break
+            except Exception:
+                logger.exception("心跳发送失败，退出心跳循环")
+                break
 
     async def watch_file_changes(self):
         """
-        监控指定目录中的文件变化（增删改）
-        目录包括：videos、outputs 以及模型目录
-        一旦检测到变化，立即发送心跳包
+        监控 videos/outputs/models 目录变化，
+        一旦检测到变化就发一次心跳，遇断连或取消时退出循环。
         """
         directories = ["videos", "outputs", self.device_manager.config.get("model_path", "models")]
-        previous_snapshot = {}
+        previous = {}
         for d in directories:
             if os.path.exists(d):
-                for file in os.listdir(d):
-                    full_path = os.path.join(d, file)
+                for f in os.listdir(d):
                     try:
-                        previous_snapshot[full_path] = os.path.getmtime(full_path)
-                    except Exception:
+                        previous[os.path.join(d, f)] = os.path.getmtime(os.path.join(d, f))
+                    except:
                         pass
         while True:
-            await asyncio.sleep(1)
-            current_snapshot = {}
-            for d in directories:
-                if os.path.exists(d):
-                    for file in os.listdir(d):
-                        full_path = os.path.join(d, file)
-                        try:
-                            current_snapshot[full_path] = os.path.getmtime(full_path)
-                        except Exception:
-                            pass
-            if current_snapshot != previous_snapshot:
-                logger.info("检测到文件变化，立即发送心跳包")
-                previous_snapshot = current_snapshot
-                await self.send_heartbeat_message()
+            try:
+                await asyncio.sleep(1)
+                current = {}
+                for d in directories:
+                    if os.path.exists(d):
+                        for f in os.listdir(d):
+                            path = os.path.join(d, f)
+                            try:
+                                current[path] = os.path.getmtime(path)
+                            except:
+                                pass
+                if current != previous:
+                    previous = current
+                    logger.info("检测到文件变化，发送一次心跳")
+                    await self.send_heartbeat_message()
+            except asyncio.CancelledError:
+                logger.info("watch_file_changes 被取消，退出文件监控")
+                break
+            except exceptions.ConnectionClosedError:
+                logger.warning("文件监控时 WebSocket 已关闭，退出文件监控")
+                break
+            except Exception:
+                logger.exception("watch_file_changes 出错，继续监控")
 
     async def _handle_messages(self):
-        """处理服务器消息"""
+        """
+        接收所有服务器 WS 消息，断连或取消后退出循环，
+        由 connect_forever 再次建立连接。
+        """
         while True:
             try:
-                if self.ws:
-                    message = await self.ws.recv()
-                    logger.info(f"收到消息: {message}")
-                    if not message:
-                        logger.warning("收到空消息")
-                        continue
-                    try:
-                        data = json.loads(message)
-                        await self._process_message(data)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"JSON解码失败: {e} - 原始消息: {message}")
-            except Exception as e:
-                logger.exception("消息处理失败")
+                msg = await self.ws.recv()
+                if msg is None:
+                    logger.warning("服务器端主动关闭 WS，退出消息循环")
+                    break
+                data = json.loads(msg)
+                await self._process_message(data)
+            except asyncio.CancelledError:
+                logger.info("_handle_messages 被取消，退出消息循环")
+                break
+            except exceptions.ConnectionClosedError:
+                logger.warning("消息接收时 WS 已关闭，退出消息循环")
+                break
+            except Exception:
+                logger.exception("消息处理失败，1s 后重试")
+                await asyncio.sleep(1)
+
 
     async def _process_message(self, data):
         cmd = data.get("cmd")
@@ -409,31 +429,55 @@ class WebSocketClient:
                 logger.info("当前视频预览任务已取消")
         self.current_preview_task = asyncio.create_task(self._video_preview_loop(filename, folder))
 
-    async def _video_preview_loop(self, filename, folder):
-        """视频预览任务：读取本地视频文件并连续发送 JPEG 帧，支持任务取消"""
+    async def _video_preview_loop(self, filename: str, folder: str):
+        """
+        处理服务端下发的 'start_video_preview'，连续发送 JPEG 帧。
+        支持任务取消、连接断开时优雅退出，并在 finally 清理任务引用。
+        """
         video_path = os.path.abspath(os.path.join(folder, filename))
         if not os.path.exists(video_path):
             logger.error(f"视频文件不存在: {video_path}")
             return
+
         cap = cv2.VideoCapture(video_path)
         try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                ret, jpeg = cv2.imencode('.jpg', frame)
-                if not ret:
+
+                ok, jpeg = cv2.imencode('.jpg', frame)
+                if not ok:
                     continue
+
                 b64 = base64.b64encode(jpeg.tobytes()).decode('utf-8')
-                message = json.dumps({"cmd": "video_frame", "data": b64})
-                await self.ws.send(message)
+                msg = json.dumps({"cmd": "video_frame", "data": b64})
+
+                try:
+                    await self.ws.send(msg)
+                except exceptions.ConnectionClosedError:
+                    logger.warning("WebSocket 已关闭，停止视频帧发送")
+                    break
+                except Exception as e:
+                    logger.error(f"发送视频帧出错: {e}")
+                    break
+
                 await asyncio.sleep(0.033)
         except asyncio.CancelledError:
             logger.info("视频预览任务被取消")
-            raise
+        except Exception as e:
+            logger.exception(f"视频预览循环异常: {e}")
         finally:
             cap.release()
-            await self.ws.send(json.dumps({"cmd": "video_preview_end"}))
+            # 发送结束通知（保护式捕获错误）
+            try:
+                await self.ws.send(json.dumps({"cmd": "video_preview_end"}))
+            except exceptions.ConnectionClosedError:
+                logger.warning("WebSocket 已关闭，无法发送预览结束通知")
+            except Exception as e:
+                logger.error(f"发送 video_preview_end 失败: {e}")
+            # **清理引用**，保证下次还能新建任务
+            self.current_preview_task = None
 
     async def _handle_video_download(self, data):
         """处理服务端下发的视频下载请求：读取本地视频文件并分块发送"""
