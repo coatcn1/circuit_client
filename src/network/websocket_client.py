@@ -21,6 +21,11 @@ PING_INTERVAL = 20                 # s
 PING_TIMEOUT  = 20                 # s
 RETRY_DELAY   = 5                  # s
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 class WebSocketClient:
@@ -30,27 +35,11 @@ class WebSocketClient:
         self.ws = None
         # 用于保存当前正在进行的视频预览任务
         self.current_preview_task = None
+        # 标注任务队列：将标注请求放入队列，由后台工作器异步执行
+        self.annotation_queue = asyncio.Queue()
+        # 标注去重集合：记录正在队列或处理中视频文件名，避免重复入队
+        self.annotation_pending = set()
 
-    # async def connect(self):
-    #     """建立 WebSocket 连接，并输出详细错误信息"""
-    #     config = self.device_manager.config
-    #     ws_url = config['server']['ws_url']
-
-    #     try:
-    #         logger.info(f"正在连接 WebSocket：{ws_url}")
-    #         self.ws = await connect(ws_url)
-    #         logger.info("WebSocket 连接成功")
-
-    #         # 启动心跳和消息处理任务
-    #         asyncio.create_task(self._heartbeat())
-    #         asyncio.create_task(self._handle_messages())
-    #         # 启动文件变化监控任务：监控 videos、outputs 和模型目录
-    #         asyncio.create_task(self.watch_file_changes())
-
-    #     except exceptions.InvalidStatus as e:
-    #         logger.error(f"WebSocket 连接失败: Invalid HTTP status {e.status_code} with headers {e.headers}")
-    #     except Exception as e:
-    #         logger.exception("连接时出现意外错误")
 # =====================================
 # 连接入口改成“循环重连”版本
 # =====================================
@@ -68,10 +57,11 @@ class WebSocketClient:
 
     async def _connect_once(self):
         """
-        建立一次连接，连接内部并发三个子任务：
+        建立一次连接，连接内部并发四个子任务：
           1. _heartbeat()
           2. watch_file_changes()
           3. _handle_messages()
+          4. _annotation_worker()
         只要其中任意一个自然结束（正常或异常），就取消剩余任务并退出，
         让 connect_forever 进行下次重连。
         """
@@ -86,11 +76,12 @@ class WebSocketClient:
         ) as self.ws:
             logger.info("WebSocket connected")
 
-            # 启动三个子任务
+            # 启动四个子任务，其中标注工作器负责从队列中取任务并执行
             tasks = [
                 asyncio.create_task(self._heartbeat()),
                 asyncio.create_task(self.watch_file_changes()),
-                asyncio.create_task(self._handle_messages())
+                asyncio.create_task(self._handle_messages()),
+                asyncio.create_task(self._annotation_worker())
             ]
 
             # 任意一个完成（正常 return 或抛异常）就触发
@@ -213,34 +204,55 @@ class WebSocketClient:
 
     async def watch_file_changes(self):
         """
-        监控 videos/outputs/models 目录变化，
-        一旦检测到变化就发一次心跳，遇断连或取消时退出循环。
+        监控 videos/outputs/models 目录：
+        - 仅在检测到新增或删除文件时触发心跳
+        - 触发后至少间隔 DEBOUNCE_INTERVAL 秒才能再次发送
+        避免在录制/标注过程中，因文件持续写入而不断心跳。
         """
-        directories = ["videos", "outputs", self.device_manager.config.get("model_path", "models")]
-        previous = {}
+        from pathlib import Path
+
+        directories = [
+            Path("videos"),
+            Path("outputs"),
+            Path(self.device_manager.config.get("model_path", "models"))
+        ]
+        # 初始化：只记录文件路径集合
+        previous_files = set()
         for d in directories:
-            if os.path.exists(d):
-                for f in os.listdir(d):
-                    try:
-                        previous[os.path.join(d, f)] = os.path.getmtime(os.path.join(d, f))
-                    except:
-                        pass
+            if d.exists():
+                previous_files |= { str(p) for p in d.iterdir() if p.is_file() }
+
+        DEBOUNCE_INTERVAL = 10  # 秒
+        last_sent = 0
+
         while True:
             try:
                 await asyncio.sleep(1)
-                current = {}
+
+                # 1) 收集当前所有文件路径
+                current_files = set()
                 for d in directories:
-                    if os.path.exists(d):
-                        for f in os.listdir(d):
-                            path = os.path.join(d, f)
-                            try:
-                                current[path] = os.path.getmtime(path)
-                            except:
-                                pass
-                if current != previous:
-                    previous = current
-                    logger.info("检测到文件变化，发送一次心跳")
-                    await self.send_heartbeat_message()
+                    if d.exists():
+                        current_files |= { str(p) for p in d.iterdir() if p.is_file() }
+
+                # 2) 计算新增或删除
+                added = current_files - previous_files
+                removed = previous_files - current_files
+
+                # 3) 只有在“真正有新增或删除”时考虑发送
+                if (added or removed):
+                    now = time.time()
+                    # 防抖：距离上次发送至少 DEBOUNCE_INTERVAL 秒
+                    if now - last_sent >= DEBOUNCE_INTERVAL:
+                        logger.info(
+                            "检测到文件列表变动，新增: %s，删除: %s，发送一次心跳",
+                            added, removed
+                        )
+                        await self.send_heartbeat_message()
+                        last_sent = now
+                    # 更新上一次的文件集合
+                    previous_files = current_files
+
             except asyncio.CancelledError:
                 logger.info("watch_file_changes 被取消，退出文件监控")
                 break
@@ -249,6 +261,7 @@ class WebSocketClient:
                 break
             except Exception:
                 logger.exception("watch_file_changes 出错，继续监控")
+
 
     async def _handle_messages(self):
         """
@@ -304,6 +317,10 @@ class WebSocketClient:
             await self._handle_upload_outputs(data)
         elif cmd == "upload_outputs_ack":
             logger.info(f"服务端确认 outputs 上传完成: {data.get('filename')}")
+        elif cmd == "shutdown":
+            await self._handle_shutdown()
+        elif cmd == "reboot":
+            await self._handle_reboot()
 
     async def _handle_start_inspection(self, data):
         """
@@ -347,7 +364,12 @@ class WebSocketClient:
             logger.exception("结束巡检命令处理失败")
 
     async def _handle_run_annotation(self, data):
-        """处理运行视频标注程序命令，并在标注成功后发送标注结束信息至服务端"""
+        """
+        处理 run_annotation 指令：
+        1. 验证参数 video_file/model_file 是否存在
+        2. 检查 video_file 是否已在队列或处理中，若是则跳过，避免重复标注
+        3. 将任务加入 annotation_queue，异步执行，不阻塞消息循环和录制任务
+        """
         try:
             params = data.get("params", {})
             video_file = params.get("video_file")
@@ -355,46 +377,96 @@ class WebSocketClient:
             if not video_file or not model_file:
                 logger.error("run_annotation 缺少视频或模型参数")
                 return
-            video_path = os.path.abspath(os.path.join("videos", video_file))
-            model_path = os.path.abspath(os.path.join("models", model_file))
-            logger.info(f"收到 run_annotation 命令：video_path={video_path}, model_path={model_path}")
 
-            cmd = [
-                "conda", "run", "-n", "yolocode", "python",
-                "/home/coatcn/workspace/ultralytics/count3.py",
-                "--source", video_path,
-                "--weights", model_path
-            ]
-            logger.info(f"执行命令: {' '.join(cmd)}")
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
-            if stdout:
-                logger.info(f"标注程序输出: {stdout.decode()}")
-            if stderr:
-                logger.error(f"标注程序错误: {stderr.decode()}")
-            if proc.returncode == 0:
-                logger.info("标注程序运行成功")
-                # 解析标注结果：从输出中匹配每个区域的计数
-                counts = self.parse_annotation_result(stdout.decode())
-                # 发送标注结果消息到服务端，包含视频文件名和计数结果
-                annotation_msg = {
-                    "cmd": "annotation_result",
-                    "video_file": video_file,
-                    "counts": counts
-                }
-                await self.ws.send(json.dumps(annotation_msg))
-                logger.info(f"发送标注结果: {annotation_msg}")
-                # 原有上传标注文件的调用已移除
-            else:
-                logger.error(f"标注程序返回错误码: {proc.returncode}")
-                await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序错误，返回码：{proc.returncode}"}))
+            # 去重：若已在队列或处理中，则跳过
+            if video_file in self.annotation_pending:
+                logger.info(f"标注任务已存在，跳过重复入队：{video_file}")
+                return
+
+            # 加入 pending 集合并入队
+            self.annotation_pending.add(video_file)
+            await self.annotation_queue.put((video_file, model_file))
+            logger.info(f"已将标注任务加入队列：video_file={video_file}, model_file={model_file}")
+
         except Exception as e:
-            logger.exception("运行标注程序失败")
-            await self.ws.send(json.dumps({"cmd": "annotation_complete", "message": f"标注程序异常: {str(e)}"}))
+            logger.exception("标注命令入队失败")
+            # 发生异常时告知服务端
+            await self.ws.send(json.dumps({
+                "cmd": "annotation_complete",
+                "message": f"标注命令入队异常: {str(e)}"
+            }))
+
+
+    async def _annotation_worker(self):
+        """
+        标注任务后台工作器：
+        - 持续从 annotation_queue 获取任务
+        - 执行外部标注程序（count3.py）
+        - 解析并发送结果到服务端
+        - 完成后从 annotation_pending 中移除，允许后续同文件重新标注
+        """
+        while True:
+            video_file, model_file = await self.annotation_queue.get()
+            try:
+                video_path = os.path.abspath(os.path.join("videos", video_file))
+                model_path = os.path.abspath(os.path.join("models", model_file))
+                logger.info(f"开始处理标注任务: video_path={video_path}, model_path={model_path}")
+
+                # 构建标注命令
+                cmd = [
+                    "conda", "run", "-n", "yolocode", "python",
+                    "/home/coatcn/workspace/ultralytics/count3.py",
+                    "--source", video_path,
+                    "--weights", model_path
+                ]
+                logger.info(f"执行命令: {' '.join(cmd)}")
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
+
+                # 记录程序输出
+                if stdout:
+                    logger.info(f"标注程序输出: {stdout.decode()}")
+                if stderr:
+                    logger.error(f"标注程序错误: {stderr.decode()}")
+
+                # 根据退出码发送结果或错误通知
+                if proc.returncode == 0:
+                    counts = self.parse_annotation_result(stdout.decode())
+                    annotation_msg = {
+                        "cmd": "annotation_result",
+                        "video_file": video_file,
+                        "counts": counts
+                    }
+                    await self.ws.send(json.dumps(annotation_msg))
+                    logger.info(f"发送标注结果: {annotation_msg}")
+                else:
+                    error_msg = f"标注程序错误，返回码：{proc.returncode}"
+                    await self.ws.send(json.dumps({
+                        "cmd": "annotation_complete",
+                        "message": error_msg
+                    }))
+                    logger.error(error_msg)
+
+            except Exception as e:
+                logger.exception("标注任务执行失败")
+                # 异常时通知服务端
+                try:
+                    await self.ws.send(json.dumps({
+                        "cmd": "annotation_complete",
+                        "message": f"标注任务异常: {str(e)}"
+                    }))
+                except Exception:
+                    logger.exception("发送标注异常通知失败")
+
+            finally:
+                # 从 pending 集合移除，允许后续同文件重新标注
+                self.annotation_pending.discard(video_file)
+                # 标注任务完成
+                self.annotation_queue.task_done()
 
 
     def parse_annotation_result(self, output):
@@ -631,3 +703,34 @@ class WebSocketClient:
             return
         logger.info("服务器要求上传 outputs: %s", filename)
         await self._upload_outputs_http(filename, folder)
+
+
+    async def _handle_shutdown(self):
+        """
+        收到服务端的关机指令后，在本机执行关机
+        """
+        try:
+            logger.info("收到关机指令，正在执行系统关机…")
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "shutdown", "-h", "now",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+        except Exception as e:
+            logger.exception("执行关机失败：%s", e)
+
+    async def _handle_reboot(self):
+        """
+        收到服务端的重启指令后，在本机执行系统重启
+        """
+        try:
+            logger.info("收到重启指令，正在执行系统重启…")
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "reboot",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.wait()
+        except Exception as e:
+            logger.exception("执行重启失败：%s", e)
